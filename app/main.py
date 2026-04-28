@@ -19,6 +19,7 @@ if str(_project_root) not in sys.path:
 import streamlit as st
 
 from app.components.sidebar import init_session_state, render_sidebar
+from app.views.preprocessing import render_preprocessing
 from app.views.viewer import render_viewer
 
 # Page config must be the very first Streamlit call
@@ -40,6 +41,9 @@ st.caption(
 
 # Sidebar (returns display settings chosen by the user)
 display_settings = render_sidebar()
+
+# Preprocessing (rotate / flip / crop) — only visible when both stacks are loaded
+render_preprocessing()
 
 # Main viewer
 render_viewer(display_settings)

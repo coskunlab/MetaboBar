@@ -12,6 +12,8 @@ import pandas as pd
 import streamlit as st
 
 from app.utils.image_processing import (
+    apply_if_color,
+    apply_viridis,
     make_merged_if_msi_overlay,
     make_rgb_overlay,
     robust_display_image,
@@ -93,16 +95,20 @@ def _render_single_channels(
     image_col1, image_col2 = st.columns(2)
 
     with image_col1:
+        norm = robust_display_image(if_stack[if_idx], pmin=pmin, pmax=pmax, gamma=gamma)
+        colored = apply_if_color(norm, if_idx)
         st.image(
-            robust_display_image(if_stack[if_idx], pmin=pmin, pmax=pmax, gamma=gamma),
+            colored,
             caption=if_labels[if_idx],
             use_container_width=True,
             clamp=True,
         )
 
     with image_col2:
+        norm = robust_display_image(msi_stack[msi_idx], pmin=pmin, pmax=pmax, gamma=gamma)
+        colored = apply_viridis(norm)
         st.image(
-            robust_display_image(msi_stack[msi_idx], pmin=pmin, pmax=pmax, gamma=gamma),
+            colored,
             caption=msi_labels[msi_idx],
             use_container_width=True,
             clamp=True,

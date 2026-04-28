@@ -1,10 +1,52 @@
 """
-Image display helpers: normalisation, single-channel rendering, RGB overlays.
+Image display helpers: normalisation, single-channel rendering, RGB overlays,
+and colormap application (IF → cycling RGB colors, MSI → viridis).
 """
 
 from typing import Optional, Sequence
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# IF channel color cycle: R, G, B, Cyan, Magenta, Yellow, then repeats
+# ---------------------------------------------------------------------------
+_IF_COLORS = [
+    (1, 0, 0),   # red
+    (0, 1, 0),   # green
+    (0, 0, 1),   # blue
+    (0, 1, 1),   # cyan
+    (1, 0, 1),   # magenta
+    (1, 1, 0),   # yellow
+]
+
+
+def if_channel_color(channel_idx: int) -> tuple:
+    """Return (R, G, B) float color for an IF channel index."""
+    return _IF_COLORS[channel_idx % len(_IF_COLORS)]
+
+
+def apply_if_color(img: np.ndarray, channel_idx: int) -> np.ndarray:
+    """
+    Apply the IF color cycle to a normalised 2-D float32 image.
+    Returns H × W × 3 float32 RGB.
+    """
+    r, g, b = if_channel_color(channel_idx)
+    H, W = img.shape
+    rgb = np.zeros((H, W, 3), dtype=np.float32)
+    rgb[:, :, 0] = img * r
+    rgb[:, :, 1] = img * g
+    rgb[:, :, 2] = img * b
+    return rgb
+
+
+def apply_viridis(img: np.ndarray) -> np.ndarray:
+    """
+    Apply the viridis colormap to a normalised 2-D float32 image.
+    Returns H × W × 3 float32 RGB.
+    """
+    import matplotlib.cm as cm
+    rgba = cm.viridis(img)          # H × W × 4
+    return rgba[:, :, :3].astype(np.float32)
 
 
 def robust_display_image(
