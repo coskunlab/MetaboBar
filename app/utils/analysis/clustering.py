@@ -228,6 +228,14 @@ def run_clustering(
             labels = df[cc].astype(str).to_numpy()
             cmap   = _color_map(labels)
 
+            # Save color assignment CSV (required by napari viewer)
+            color_rows = [{"cluster": lab, "R": r, "G": g, "B": b,
+                           "hex": "#{:02X}{:02X}{:02X}".format(r,g,b)}
+                          for lab, (r,g,b) in cmap.items()]
+            pd.DataFrame(color_rows).sort_values("cluster").to_csv(
+                out_dir / f"{cc}__colors.csv", index=False
+            )
+
             _save_umap(umap_xy, labels, cmap,
                        out_dir / f"{cc}__umap.png",
                        f"{name}: {cc}")

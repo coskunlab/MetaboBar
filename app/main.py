@@ -20,13 +20,15 @@ import streamlit as st
 
 from app.components.sidebar import init_session_state, render_sidebar
 from app.views.analysis import render_analysis
+from app.views.napari_launch import render_napari_launch
+from app.views.positivity import render_positivity
 from app.views.preprocessing import render_preprocessing
 from app.views.registration import render_registration
 from app.views.viewer import render_viewer
 
 # Page config must be the very first Streamlit call
 st.set_page_config(
-    page_title="Interactive IF + MSI Viewer",
+    page_title="Metabobarcoding",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -35,7 +37,7 @@ st.set_page_config(
 init_session_state()
 
 # Header
-st.title("Interactive IF + MSI Viewer")
+st.title("Metabobarcoding")
 st.caption(
     "Load a multiplex IF image and a matching MSI image, "
     "then inspect channels or RGB overlays side by side."
@@ -55,3 +57,9 @@ render_registration()
 
 # Analysis pipeline
 render_analysis()
+
+# Positivity thresholding
+render_positivity()
+
+# Interactive napari viewer
+render_napari_launch()

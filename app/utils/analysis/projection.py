@@ -209,6 +209,21 @@ def run_projection_pipeline(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1a. Nearest-neighbour upsample (raw, no smoothing)
+    _s("Upsampling MSI to IF resolution (nearest-neighbour)…")
+    import cv2 as _cv2
+    hr_h, hr_w = if_shape
+    C = msi_stack.shape[0]
+    nn_stack = np.empty((C, hr_h, hr_w), dtype=msi_stack.dtype)
+    for c in range(C):
+        nn_stack[c] = _cv2.resize(
+            msi_stack[c], (hr_w, hr_h), interpolation=_cv2.INTER_NEAREST
+        )
+    nn_path = output_dir / "projected_stack_all_channels__full_hr__nearest.tif"
+    tiff.imwrite(str(nn_path), nn_stack)
+    _s(f"Saved nearest-neighbour stack → {nn_path.name}")
+
+    # 1b. Gaussian-weighted projection
     projected = project_msi_to_if(
         msi_stack, if_shape,
         sigma_lr=sigma_lr, radius_lr=radius_lr,
@@ -234,6 +249,7 @@ def run_projection_pipeline(
 
     return {
         "projected_tif": output_dir / "projected_stack_all_channels__full_hr__gaussian.tif",
-        "nuclear_csv": nuclear_csv,
-        "expanded_csv": expanded_csv,
+        "nearest_tif":   nn_path,
+        "nuclear_csv":   nuclear_csv,
+        "expanded_csv":  expanded_csv,
     }
