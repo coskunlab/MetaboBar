@@ -153,6 +153,25 @@ def _tab_binary(out_dir: Optional[Path], msi_labels: List[str]) -> None:
         st.warning("Select at least one marker.")
         return
 
+    # Feature channel selection — exclude the target marker by default
+    st.markdown("**Node features (MSI channels)**")
+    st.caption(
+        "Select which MSI channels to use as GNN node features. "
+        "The target marker is excluded by default to prevent data leakage."
+    )
+    # Default: all channels except the selected markers (to avoid leakage for any of them)
+    default_feat = [c for c in msi_labels if c not in selected_markers]
+    feature_cols_selected = st.multiselect(
+        "Feature channels",
+        options=msi_labels,
+        default=default_feat,
+        key="gnn_binary_feat_cols",
+        help="Channels used as input features for the GNN. Exclude the target marker(s) to avoid data leakage.",
+    )
+    if not feature_cols_selected:
+        st.warning("Select at least one feature channel.")
+        return
+
     params = _shared_params("bin")
 
     gnn_out_dir = out_dir / "gnn_explainability" / "binary"
@@ -169,13 +188,11 @@ def _tab_binary(out_dir: Optional[Path], msi_labels: List[str]) -> None:
             # Merge binary labels into cell_df
             cell_df = cell_df.merge(bin_df, on="cell_id", how="left")
 
-            # Feature cols = MSI channels present in both tables
-            feat_cols = [c for c in msi_labels if c in cell_df.columns and c in sp_df.columns]
+            # Feature cols = user-selected channels present in both tables
+            feat_cols = [c for c in feature_cols_selected if c in cell_df.columns and c in sp_df.columns]
             if not feat_cols:
-                st.error("No matching MSI feature columns found in cell/superpixel tables.")
+                st.error("None of the selected feature channels were found in the cell/superpixel tables.")
                 return
-
-            total = len(selected_markers)
             for i, marker in enumerate(selected_markers):
                 col = f"{marker}__positive"
                 if col not in cell_df.columns:
@@ -263,7 +280,22 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
 
     target_name = f"cluster_{selected_col}"
 
-    params = _shared_params("multi")
+    # Feature channel selection
+    st.markdown("**Node features (MSI channels)**")
+    st.caption(
+        "Select which MSI channels to use as GNN node features. "
+        "Exclude channels that were used to define the cluster labels to avoid data leakage."
+    )
+    multi_feat_cols = st.multiselect(
+        "Feature channels",
+        options=msi_labels,
+        default=msi_labels,
+        key="gnn_multi_feat_cols",
+        help="All MSI channels are selected by default. Deselect any that were used to define the clusters.",
+    )
+    if not multi_feat_cols:
+        st.warning("Select at least one feature channel.")
+        return
 
     gnn_out_dir = out_dir / "gnn_explainability" / "multiclass"
 
@@ -286,9 +318,9 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
             # Drop rows with missing cluster labels
             cell_df = cell_df.dropna(subset=[selected_col]).reset_index(drop=True)
 
-            feat_cols = [c for c in msi_labels if c in cell_df.columns and c in sp_df.columns]
+            feat_cols = [c for c in multi_feat_cols if c in cell_df.columns and c in sp_df.columns]
             if not feat_cols:
-                st.error("No matching MSI feature columns found.")
+                st.error("None of the selected feature channels were found in the cell/superpixel tables.")
                 return
 
             n_classes = cell_df[selected_col].nunique()
