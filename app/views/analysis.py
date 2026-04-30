@@ -597,8 +597,16 @@ def _tab_clustering(msi_labels):
         st.warning("Set an output folder above.")
         return
 
-    st.caption(f"Clustering on {len(msi_labels)} MSI channels.")
-    selected_labels = msi_labels
+    st.caption(f"{len(msi_labels)} MSI channels available.")
+
+    # Channel selector
+    selected_labels = st.multiselect(
+        "Channels to use for clustering",
+        options=msi_labels,
+        default=msi_labels,
+        key="ana_cl_channels",
+        help="Select which MSI channels to include as features for PCA/UMAP/clustering.",
+    )
     if not selected_labels:
         st.warning("Select at least one channel.")
         return

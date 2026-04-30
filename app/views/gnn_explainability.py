@@ -153,20 +153,18 @@ def _tab_binary(out_dir: Optional[Path], msi_labels: List[str]) -> None:
         st.warning("Select at least one marker.")
         return
 
-    # Feature channel selection — exclude the target marker by default
+    # Feature channel selection — user picks which channels to use as node features
     st.markdown("**Node features (MSI channels)**")
     st.caption(
         "Select which MSI channels to use as GNN node features. "
-        "The target marker is excluded by default to prevent data leakage."
+        "Consider excluding channels that directly define the positivity labels to avoid data leakage."
     )
-    # Default: all channels except the selected markers (to avoid leakage for any of them)
-    default_feat = [c for c in msi_labels if c not in selected_markers]
     feature_cols_selected = st.multiselect(
         "Feature channels",
         options=msi_labels,
-        default=default_feat,
+        default=msi_labels,
         key="gnn_binary_feat_cols",
-        help="Channels used as input features for the GNN. Exclude the target marker(s) to avoid data leakage.",
+        help="All MSI channels are selected by default.",
     )
     if not feature_cols_selected:
         st.warning("Select at least one feature channel.")
