@@ -167,6 +167,19 @@ def _tab_segmentation(if_stack, if_labels):
                                    key="ana_seg_iqr_mult")
         mesmer_py = st.text_input("Mesmer Python path", MESMER_PYTHON,
                                   key="ana_seg_python")
+        deepcell_token = st.text_input(
+            "DeepCell access token",
+            value=st.session_state.get("ana_deepcell_token", ""),
+            key="ana_deepcell_token_input",
+            type="password",
+            help=(
+                "Required on first run to download the Mesmer model (~100 MB). "
+                "Create a free token at https://users.deepcell.org — takes 30 seconds. "
+                "Leave blank if the model is already cached on this machine."
+            ),
+        )
+        if deepcell_token:
+            st.session_state["ana_deepcell_token"] = deepcell_token
 
     if st.button("Run Segmentation", type="primary", key="ana_seg_run",
                  use_container_width=True):
@@ -191,6 +204,7 @@ def _tab_segmentation(if_stack, if_labels):
                 robust_z_thresh=float(robust_z),
                 iqr_multiplier=float(iqr_mult),
                 mesmer_python=mesmer_py,
+                deepcell_token=deepcell_token,
                 status_cb=lambda msg: status.info(msg),
                 progress_cb=_seg_progress,
             )

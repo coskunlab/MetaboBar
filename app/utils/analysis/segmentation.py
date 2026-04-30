@@ -52,14 +52,17 @@ deepcell_cache  = params.get("deepcell_cache", "")
 if deepcell_cache:
     import os
     from pathlib import Path as _Path
-    # Override HOME so Path.home() / ".deepcell" resolves to our bundle cache
-    # This must happen BEFORE any deepcell import
-    _fake_home = str(_Path(deepcell_cache).parent)
+    # Set USERPROFILE and HOME before any deepcell import
+    # so Path.home() / ".deepcell" resolves to our bundled cache
+    _fake_home = str(_Path(deepcell_cache))
     os.environ["USERPROFILE"] = _fake_home
     os.environ["HOME"] = _fake_home
-    # Dummy token in case the hash check fails and it tries to download
-    if not os.environ.get("DEEPCELL_ACCESS_TOKEN"):
-        os.environ["DEEPCELL_ACCESS_TOKEN"] = "bundled_offline"
+
+# Use provided token if given (overrides bundled cache attempt)
+deepcell_token = params.get("deepcell_token", "")
+if deepcell_token:
+    import os
+    os.environ["DEEPCELL_ACCESS_TOKEN"] = deepcell_token
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
@@ -278,6 +281,7 @@ def run_mesmer_segmentation(
     robust_z_thresh: float = 3.5,
     iqr_multiplier: float = 1.5,
     mesmer_python: str = MESMER_PYTHON,
+    deepcell_token: str = "",
     status_cb=None,
     progress_cb=None,
     timeout: int = 3600,
@@ -318,6 +322,7 @@ def run_mesmer_segmentation(
         iqr_multiplier=iqr_multiplier,
         use_gpu=True,
         deepcell_cache=get_deepcell_cache(),
+        deepcell_token=deepcell_token,
     )
 
     with tempfile.NamedTemporaryFile(
