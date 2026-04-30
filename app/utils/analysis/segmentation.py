@@ -21,10 +21,10 @@ from typing import Optional
 import numpy as np
 import tifffile as tiff
 
-MESMER_PYTHON = r"C:\Users\eozturk7\AppData\Local\miniconda3\envs\mesmer\python.exe"
+from app.utils.bundle_paths import get_mesmer_python
 
-# ---------------------------------------------------------------------------
-# Subprocess script template
+MESMER_PYTHON = get_mesmer_python()
+
 # ---------------------------------------------------------------------------
 
 _MESMER_SCRIPT = textwrap.dedent("""\

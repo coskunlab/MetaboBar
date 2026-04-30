@@ -24,7 +24,9 @@ import tifffile as tiff
 # ---------------------------------------------------------------------------
 # Fiji executable
 # ---------------------------------------------------------------------------
-DEFAULT_FIJI_PATH = r"C:\Users\eozturk7\Desktop\Fiji.app\ImageJ-win64.exe"
+from app.utils.bundle_paths import get_fiji_exe
+
+DEFAULT_FIJI_PATH = get_fiji_exe()
 
 # ---------------------------------------------------------------------------
 # SIFT default parameters (matching the screenshot)
