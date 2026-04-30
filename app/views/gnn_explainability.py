@@ -191,6 +191,7 @@ def _tab_binary(out_dir: Optional[Path], msi_labels: List[str]) -> None:
             if not feat_cols:
                 st.error("None of the selected feature channels were found in the cell/superpixel tables.")
                 return
+            total = len(selected_markers)
             for i, marker in enumerate(selected_markers):
                 col = f"{marker}__positive"
                 if col not in cell_df.columns:
@@ -294,6 +295,8 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
     if not multi_feat_cols:
         st.warning("Select at least one feature channel.")
         return
+
+    params = _shared_params("multi")
 
     gnn_out_dir = out_dir / "gnn_explainability" / "multiclass"
 
