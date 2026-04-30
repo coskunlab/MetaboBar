@@ -20,7 +20,6 @@ def get_mesmer_python() -> str:
     root = _bundle_root()
     if root:
         return str(root / "envs" / "mesmer" / "python.exe")
-    # Developer fallback
     return r"C:\Users\eozturk7\AppData\Local\miniconda3\envs\mesmer\python.exe"
 
 
@@ -28,5 +27,16 @@ def get_fiji_exe() -> str:
     root = _bundle_root()
     if root:
         return str(root / "Fiji.app" / "ImageJ-win64.exe")
-    # Developer fallback
     return r"C:\Users\eozturk7\Desktop\Fiji.app\ImageJ-win64.exe"
+
+
+def get_deepcell_cache() -> str:
+    """
+    Path to the pre-downloaded Mesmer model cache.
+    Bundled so users don't need a DEEPCELL_ACCESS_TOKEN or internet.
+    """
+    root = _bundle_root()
+    if root:
+        return str(root / "deepcell_cache")
+    # Developer machine — use the default ~/.deepcell location
+    return str(Path.home() / ".deepcell")

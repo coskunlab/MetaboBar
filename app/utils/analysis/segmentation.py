@@ -21,7 +21,7 @@ from typing import Optional
 import numpy as np
 import tifffile as tiff
 
-from app.utils.bundle_paths import get_mesmer_python
+from app.utils.bundle_paths import get_mesmer_python, get_deepcell_cache
 
 MESMER_PYTHON = get_mesmer_python()
 
@@ -46,8 +46,15 @@ area_method    = params["area_method"]
 robust_z_thresh = float(params["robust_z_thresh"])
 iqr_multiplier  = float(params["iqr_multiplier"])
 use_gpu         = bool(params["use_gpu"])
+deepcell_cache  = params.get("deepcell_cache", "")
 
-# ---- GPU control ----
+# ---- Point DeepCell to bundled model cache (no token needed) ----
+if deepcell_cache:
+    import os
+    os.environ["DEEPCELL_CACHE_DIR"] = deepcell_cache
+    # Provide a dummy token so DeepCell doesn't raise before checking cache
+    if not os.environ.get("DEEPCELL_ACCESS_TOKEN"):
+        os.environ["DEEPCELL_ACCESS_TOKEN"] = "bundled"
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
@@ -305,6 +312,7 @@ def run_mesmer_segmentation(
         robust_z_thresh=robust_z_thresh,
         iqr_multiplier=iqr_multiplier,
         use_gpu=True,
+        deepcell_cache=get_deepcell_cache(),
     )
 
     with tempfile.NamedTemporaryFile(
