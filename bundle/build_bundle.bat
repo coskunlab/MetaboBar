@@ -53,7 +53,8 @@ echo Fiji copied.
 
 REM ---- Copy Mesmer model cache ----
 echo [4b] Copying Mesmer model cache...
-xcopy /E /I /Q "%USERPROFILE%\.deepcell" "%DIST%\deepcell_cache"
+REM Copy as <bundle>/deepcell_home/.deepcell so Path.home()/.deepcell resolves correctly
+xcopy /E /I /Q "%USERPROFILE%\.deepcell" "%DIST%\deepcell_home\.deepcell"
 echo Mesmer model cache copied.
 
 REM ---- Copy app code ----

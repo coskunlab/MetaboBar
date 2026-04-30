@@ -32,11 +32,12 @@ def get_fiji_exe() -> str:
 
 def get_deepcell_cache() -> str:
     """
-    Path to the pre-downloaded Mesmer model cache.
-    Bundled so users don't need a DEEPCELL_ACCESS_TOKEN or internet.
+    Returns the fake HOME directory containing the .deepcell model cache.
+    Setting HOME/USERPROFILE to this path makes Path.home()/.deepcell
+    resolve to the bundled models — no token or download needed.
     """
     root = _bundle_root()
     if root:
-        return str(root / "deepcell_cache")
-    # Developer machine — use the default ~/.deepcell location
-    return str(Path.home() / ".deepcell")
+        return str(root / "deepcell_home")
+    # Developer machine — use actual home
+    return str(Path.home())

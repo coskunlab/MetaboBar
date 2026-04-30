@@ -51,10 +51,15 @@ deepcell_cache  = params.get("deepcell_cache", "")
 # ---- Point DeepCell to bundled model cache (no token needed) ----
 if deepcell_cache:
     import os
-    os.environ["DEEPCELL_CACHE_DIR"] = deepcell_cache
-    # Provide a dummy token so DeepCell doesn't raise before checking cache
+    from pathlib import Path as _Path
+    # Override HOME so Path.home() / ".deepcell" resolves to our bundle cache
+    # This must happen BEFORE any deepcell import
+    _fake_home = str(_Path(deepcell_cache).parent)
+    os.environ["USERPROFILE"] = _fake_home
+    os.environ["HOME"] = _fake_home
+    # Dummy token in case the hash check fails and it tries to download
     if not os.environ.get("DEEPCELL_ACCESS_TOKEN"):
-        os.environ["DEEPCELL_ACCESS_TOKEN"] = "bundled"
+        os.environ["DEEPCELL_ACCESS_TOKEN"] = "bundled_offline"
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
