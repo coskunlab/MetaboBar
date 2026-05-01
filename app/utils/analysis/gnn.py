@@ -346,7 +346,6 @@ def train_one_fold_binary(base_data, y_all, feature_names, target_name, fold, fo
                           max_explain_nodes, top_k, device, seed,
                           save_model=True, status_cb=None):
     set_seed(seed + fold)
-    fold_dir.mkdir(parents=True, exist_ok=True)
     dev = torch.device(device)
 
     train_mask = np.zeros(n_nodes, dtype=bool); train_mask[:n_cells] = train_mask_cells
@@ -431,7 +430,6 @@ def train_one_fold_multiclass(base_data, y_all, feature_names, target_name, fold
                               epochs, patience, explain_method, max_explain_nodes,
                               top_k, device, seed, save_model=True, status_cb=None):
     set_seed(seed + fold)
-    fold_dir.mkdir(parents=True, exist_ok=True)
     dev = torch.device(device)
 
     train_mask = np.zeros(n_nodes, dtype=bool); train_mask[:n_cells] = train_mask_cells
@@ -517,8 +515,6 @@ def _build_base(cell_df, sp_df, feature_cols, radius_um, pixel_size_um,
         cell_df, sp_df, cell_id_col, sp_id_col, cx_col, cy_col,
         radius_um, pixel_size_um)
 
-    torch.save({"edge_index": edge_tensor, "n_cells": n_cells, "n_sp": n_sp},
-               output_dir / "base_mixed_graph.pt")
     if status_cb: status_cb(f"  {n_nodes} nodes ({n_cells} cells, {n_sp} superpixels), {edge_tensor.shape[1]} edges")
     if status_cb: status_cb("Preparing features…")
     X_all, scaler = prepare_features(cell_df, sp_df, feature_cols, standardize, log1p)
