@@ -399,29 +399,12 @@ def train_one_fold_binary(base_data, y_all, feature_names, target_name, fold, fo
 
     if best_state:
         model.load_state_dict({k: v.to(dev) for k, v in best_state.items()})
-    if save_model:
-        torch.save(model.state_dict(), fold_dir / f"model_fold{fold}.pt")
 
+    # No model weights, metrics, or predictions saved — importance only
     model.eval()
     with torch.no_grad():
         all_logits = model(x, ei)
-        test_prob  = torch.sigmoid(all_logits[torch.tensor(test_idx, dtype=torch.long).to(dev)]).cpu().numpy()
-        cell_prob  = torch.sigmoid(all_logits[:n_cells]).cpu().numpy()
 
-    metrics = compute_metrics_binary(y_all[test_idx].astype(int), test_prob)
-    metrics["val_roc_auc"] = best_val_auc; metrics["fold"] = fold
-
-    pred_df = pd.DataFrame({
-        "node_id": node_ids[:n_cells],
-        "y_true":  y_all[:n_cells].astype(int),
-        "y_prob":  cell_prob,
-        "y_pred":  (cell_prob >= 0.5).astype(int),
-        "split":   ["train" if train_mask[i] else "val" if val_mask[i] else
-                    "test" if test_mask[i] else "unused" for i in range(n_cells)],
-        "fold": fold,
-    })
-
-    # Explainability
     if explain_on == "test_positives":
         exp_idx = np.where(test_mask_cells & (y_all[:n_cells] == 1))[0]
     else:
@@ -433,8 +416,7 @@ def train_one_fold_binary(base_data, y_all, feature_names, target_name, fold, fo
     exp_data = Data(x=base_data.x.to(dev), edge_index=base_data.edge_index.to(dev))
     importance = explain_nodes(model, exp_data, exp_idx, explain_method) if len(exp_idx) > 0 else np.zeros(feat_dim, np.float32)
 
-    imp_df = pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold})
-    return metrics, pred_df, imp_df
+    return pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold})
 
 
 # ---------------------------------------------------------------------------
@@ -500,30 +482,11 @@ def train_one_fold_multiclass(base_data, y_all, feature_names, target_name, fold
 
     if best_state:
         model.load_state_dict({k: v.to(dev) for k, v in best_state.items()})
-    if save_model:
-        torch.save(model.state_dict(), fold_dir / f"model_fold{fold}.pt")
 
+    # No model weights, metrics, or predictions saved — importance only
     model.eval()
     with torch.no_grad():
         all_logits = model(x, ei)
-        test_pred  = all_logits[torch.tensor(test_idx, dtype=torch.long).to(dev)].argmax(dim=1).cpu().numpy()
-        cell_probs = torch.softmax(all_logits[:n_cells], dim=1).cpu().numpy()
-        cell_preds = all_logits[:n_cells].argmax(dim=1).cpu().numpy()
-
-    metrics = compute_metrics_multiclass(y_all[test_idx].astype(int), test_pred)
-    metrics["val_f1_macro"] = best_val_f1; metrics["fold"] = fold
-
-    pred_rows: Dict = {
-        "node_id": list(node_ids[:n_cells]),
-        "y_true":  list(y_all[:n_cells].astype(int)),
-        "y_pred":  list(cell_preds),
-        "split":   ["train" if train_mask[i] else "val" if val_mask[i] else
-                    "test" if test_mask[i] else "unused" for i in range(n_cells)],
-        "fold": [fold] * n_cells,
-    }
-    for c, cn in enumerate(class_names):
-        pred_rows[f"prob_{safe_filename(cn)}"] = list(cell_probs[:, c])
-    pred_df = pd.DataFrame(pred_rows)
 
     exp_data = Data(x=base_data.x.to(dev), edge_index=base_data.edge_index.to(dev))
     imp_per_class: Dict[str, pd.DataFrame] = {}
@@ -535,7 +498,7 @@ def train_one_fold_multiclass(base_data, y_all, feature_names, target_name, fold
         importance = explain_nodes(model, exp_data, exp_idx, explain_method, class_idx=c) if len(exp_idx) > 0 else np.zeros(feat_dim, np.float32)
         imp_per_class[cn] = pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold, "class": cn})
 
-    return metrics, pred_df, imp_per_class
+    return imp_per_class
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +520,6 @@ def _build_base(cell_df, sp_df, feature_cols, radius_um, pixel_size_um,
     torch.save({"edge_index": edge_tensor, "n_cells": n_cells, "n_sp": n_sp},
                output_dir / "base_mixed_graph.pt")
     if status_cb: status_cb(f"  {n_nodes} nodes ({n_cells} cells, {n_sp} superpixels), {edge_tensor.shape[1]} edges")
-
     if status_cb: status_cb("Preparing features…")
     X_all, scaler = prepare_features(cell_df, sp_df, feature_cols, standardize, log1p)
     base_data = Data(x=torch.tensor(X_all, dtype=torch.float32), edge_index=edge_tensor)
@@ -589,19 +551,16 @@ def run_binary_gnn(cell_df, sp_df, feature_cols, binary_labels_col, target_name,
     y_all   = np.concatenate([y_cells, np.full(n_sp, -1, dtype=np.float32)])
     splits  = make_kfold_splits(y_cells.astype(int), n_folds, inner_val_frac, seed)
 
-    all_metrics, all_preds, all_imp = [], [], []
+    all_imp = []
     for fold, tm, vm, em in splits:
         _cb(f"Fold {fold+1}/{n_folds}…")
-        m, p, i = train_one_fold_binary(
+        imp_df = train_one_fold_binary(
             base_data, y_all, feature_cols, target_name, fold, target_dir / f"fold_{fold}",
             n_cells, n_nodes, feat_dim, node_type, node_ids, tm, vm, em,
             hidden_dim, num_layers, dropout, lr, weight_decay, epochs, patience,
             explain_method, explain_on, max_explain_nodes, top_k, device, seed,
             status_cb=status_cb)
-        all_metrics.append(m); all_preds.append(p); all_imp.append(i)
-
-    pd.DataFrame(all_metrics).to_csv(target_dir / "fold_metrics.csv", index=False)
-    pd.concat(all_preds, ignore_index=True).to_csv(target_dir / "node_predictions.csv", index=False)
+        all_imp.append(imp_df)
 
     imp_all  = pd.concat(all_imp, ignore_index=True)
     imp_mean = imp_all.groupby("feature")["importance"].agg(["mean","std"]).reset_index()
@@ -611,22 +570,8 @@ def run_binary_gnn(cell_df, sp_df, feature_cols, binary_labels_col, target_name,
     _plot_importance(imp_mean, top_k, f"{target_name} – top-{top_k} (binary)",
                      target_dir / "feature_importance_topk.png")
 
-    summary = {"target": target_name, "task": "binary"}
-    for k in ["accuracy","f1","roc_auc","pr_auc"]:
-        vals = [m[k] for m in all_metrics if k in m]
-        if vals:
-            mn, sd, _ = summarize_metric(vals)
-            summary[f"{k}_mean"] = mn; summary[f"{k}_std"] = sd
-
-    sp = output_dir / "summary_metrics_all_targets.csv"
-    sdf = pd.DataFrame([summary])
-    if sp.exists():
-        sdf = pd.concat([pd.read_csv(sp), sdf], ignore_index=True)
-    sdf.to_csv(sp, index=False)
-
     _cb(f"[Binary GNN] Done → {target_dir}")
-    summary["output_dir"] = str(target_dir)
-    return summary
+    return {"target": target_name, "task": "binary", "output_dir": str(target_dir)}
 
 
 def run_multiclass_gnn(cell_df, sp_df, feature_cols, cluster_col, target_name,
@@ -660,25 +605,20 @@ def run_multiclass_gnn(cell_df, sp_df, feature_cols, cluster_col, target_name,
 
     splits = make_kfold_splits(y_cells, n_folds, inner_val_frac, seed)
 
-    all_metrics, all_preds = [], []
     all_imp_per_class: Dict[str, List] = {cn: [] for cn in class_names}
 
     for fold, tm, vm, em in splits:
         _cb(f"Fold {fold+1}/{n_folds}…")
-        m, p, imp_dict = train_one_fold_multiclass(
+        imp_dict = train_one_fold_multiclass(
             base_data, y_all, feature_cols, target_name, fold, target_dir / f"fold_{fold}",
             n_cells, n_nodes, feat_dim, node_type, node_ids, tm, vm, em,
             num_classes, class_names,
             hidden_dim, num_layers, dropout, lr, weight_decay, epochs, patience,
             explain_method, max_explain_nodes, top_k, device, seed,
             status_cb=status_cb)
-        all_metrics.append(m); all_preds.append(p)
         for cn in class_names:
             if cn in imp_dict:
                 all_imp_per_class[cn].append(imp_dict[cn])
-
-    pd.DataFrame(all_metrics).to_csv(target_dir / "fold_metrics.csv", index=False)
-    pd.concat(all_preds, ignore_index=True).to_csv(target_dir / "node_predictions.csv", index=False)
 
     for cn in class_names:
         if not all_imp_per_class[cn]:
@@ -693,19 +633,5 @@ def run_multiclass_gnn(cell_df, sp_df, feature_cols, cluster_col, target_name,
         _plot_importance(imp_mean, top_k, f"{target_name} class '{cn}' top-{top_k}",
                          target_dir / f"feature_importance_topk_{cn_safe}.png")
 
-    summary = {"target": target_name, "task": "multiclass", "num_classes": num_classes}
-    for k in ["accuracy","f1_macro","f1_weighted"]:
-        vals = [m[k] for m in all_metrics if k in m]
-        if vals:
-            mn, sd, _ = summarize_metric(vals)
-            summary[f"{k}_mean"] = mn; summary[f"{k}_std"] = sd
-
-    sp = output_dir / "summary_metrics_all_targets.csv"
-    sdf = pd.DataFrame([summary])
-    if sp.exists():
-        sdf = pd.concat([pd.read_csv(sp), sdf], ignore_index=True)
-    sdf.to_csv(sp, index=False)
-
     _cb(f"[Multiclass GNN] Done → {target_dir}")
-    summary["output_dir"] = str(target_dir)
-    return summary
+    return {"target": target_name, "task": "multiclass", "num_classes": num_classes, "output_dir": str(target_dir)}
