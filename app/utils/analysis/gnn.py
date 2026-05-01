@@ -494,7 +494,7 @@ def train_one_fold_multiclass(base_data, y_all, feature_names, target_name, fold
             exp_idx = np.where(test_mask_cells)[0]
         exp_idx = sample_indices(exp_idx, max_explain_nodes, seed + fold + c)
         importance = explain_nodes(model, exp_data, exp_idx, explain_method, class_idx=c) if len(exp_idx) > 0 else np.zeros(feat_dim, np.float32)
-        imp_per_class[cn] = pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold, "class": cn})
+        imp_per_class[cn] = pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold, "cluster": cn})
 
     return imp_per_class
 
@@ -624,10 +624,10 @@ def run_multiclass_gnn(cell_df, sp_df, feature_cols, cluster_col, target_name,
         imp_mean = imp_all.groupby("feature")["importance"].agg(["mean","std"]).reset_index()
         imp_mean.columns = ["feature", "mean_importance", "std_importance"]
         imp_mean["sem"] = imp_mean["std_importance"] / np.sqrt(len(all_imp_per_class[cn]))
-        imp_mean["class"] = cn
-        imp_mean.to_csv(target_dir / f"feature_importance_mean_{cn_safe}.csv", index=False)
-        _plot_importance(imp_mean, top_k, f"{target_name} class '{cn}' top-{top_k}",
-                         target_dir / f"feature_importance_topk_{cn_safe}.png")
+        imp_mean["cluster"] = cn
+        imp_mean.to_csv(target_dir / f"feature_importance_mean_cluster_{cn_safe}.csv", index=False)
+        _plot_importance(imp_mean, top_k, f"{target_name} cluster '{cn}' top-{top_k}",
+                         target_dir / f"feature_importance_topk_cluster_{cn_safe}.png")
 
     _cb(f"[Multiclass GNN] Done → {target_dir}")
     return {"target": target_name, "task": "multiclass", "num_classes": num_classes, "output_dir": str(target_dir)}

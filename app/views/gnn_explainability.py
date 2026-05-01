@@ -362,14 +362,14 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
 
         for tn, s in st.session_state.gnn_multi_results.items():
             out_path = Path(s.get("output_dir", ""))
-            pngs = sorted(out_path.glob("feature_importance_topk_*.png"))
+            pngs = sorted(out_path.glob("feature_importance_topk_cluster_*.png"))
             if pngs:
                 with st.expander(f"Feature importance — {tn}", expanded=False):
                     cols = st.columns(min(3, len(pngs)))
                     for j, png in enumerate(pngs):
-                        class_name = png.stem.replace("feature_importance_topk_", "")
+                        cluster_name = png.stem.replace("feature_importance_topk_cluster_", "")
                         with cols[j % len(cols)]:
-                            st.caption(f"Class: {class_name}")
+                            st.caption(f"Cluster: {cluster_name}")
                             st.image(str(png), use_container_width=True)
 
 
