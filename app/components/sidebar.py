@@ -308,7 +308,7 @@ def _render_display_settings() -> dict:
 
     view_mode = st.radio(
         "View mode",
-        ["Single channels", "RGB overlays", "Merged IF/MSI overlay"],
+        ["Single channels", "RGB overlays"],
         index=0,
     )
 

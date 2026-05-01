@@ -259,9 +259,5 @@ def render_viewer(display_settings: dict) -> None:
 
     if view_mode == "Single channels":
         _render_single_channels(if_stack, if_labels, msi_stack, msi_labels, pmin, pmax, gamma)
-
-    elif view_mode == "RGB overlays":
-        _render_rgb_overlays(if_stack, if_labels, msi_stack, msi_labels, pmin, pmax, gamma)
-
     else:
-        _render_merged_overlay(if_stack, if_labels, msi_stack, msi_labels, pmin, pmax, gamma)
+        _render_rgb_overlays(if_stack, if_labels, msi_stack, msi_labels, pmin, pmax, gamma)
