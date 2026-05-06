@@ -129,19 +129,18 @@ def render_comparative() -> None:
         can_run = len(valid_samples) >= 2 and out_dir is not None
 
         if st.button(
-            "Run Binary Comparison",
+            "Run Comparison",
             type="primary",
             key="comp_run_binary",
             disabled=not can_run,
             use_container_width=True,
         ):
             status   = st.empty()
-            progress = st.progress(0.0, text="Starting binary comparison…")
+            progress = st.progress(0.0, text="Starting comparison…")
             try:
-                binary_out = out_dir / "binary"
                 plots = run_binary_comparison(
                     sample_dirs=valid_samples,
-                    output_dir=binary_out,
+                    output_dir=out_dir,
                     top_n=int(top_n),
                     status_cb=lambda m: (status.info(m), progress.progress(0.5, text=m)),
                 )
@@ -149,15 +148,15 @@ def render_comparative() -> None:
                     k: [str(p) for p in v] for k, v in plots.items()
                 }
                 progress.progress(1.0, text="Done.")
-                status.success(f"Binary comparison complete → {binary_out}")
+                status.success(f"Comparison complete → {out_dir}")
             except Exception as e:
-                status.error("Binary comparison failed.")
+                status.error("Comparison failed.")
                 st.exception(e)
 
         # ---- Display results ----
         if st.session_state.comp_binary_plots:
             st.divider()
-            st.markdown("#### Binary comparison results")
+            st.markdown("#### Comparison results")
             for marker, png_paths in sorted(st.session_state.comp_binary_plots.items()):
                 with st.expander(f"Marker: {marker}", expanded=False):
                     img_cols = st.columns(min(3, len(png_paths)))
