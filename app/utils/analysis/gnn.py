@@ -415,7 +415,8 @@ def train_one_fold_binary(base_data, y_all, feature_names, target_name, fold, fo
     exp_data = Data(x=base_data.x.to(dev), edge_index=base_data.edge_index.to(dev))
     importance = explain_nodes(model, exp_data, exp_idx, explain_method) if len(exp_idx) > 0 else np.zeros(feat_dim, np.float32)
 
-    return pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold})
+    imp_df = pd.DataFrame({"feature": feature_names, "importance": importance, "fold": fold})
+    return imp_df
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +499,6 @@ def train_one_fold_multiclass(base_data, y_all, feature_names, target_name, fold
 
     return imp_per_class
 
-
 # ---------------------------------------------------------------------------
 # Top-level runners
 # ---------------------------------------------------------------------------
@@ -563,6 +563,8 @@ def run_binary_gnn(cell_df, sp_df, feature_cols, binary_labels_col, target_name,
     imp_mean.columns = ["feature", "mean_importance", "std_importance"]
     imp_mean["sem"] = imp_mean["std_importance"] / np.sqrt(len(all_imp))
     imp_mean.to_csv(target_dir / "feature_importance_mean.csv", index=False)
+    # Save foldwise for comparative violin plots
+    imp_all.to_csv(target_dir / "feature_importance_foldwise.csv", index=False)
     _plot_importance(imp_mean, top_k, f"{target_name} – top-{top_k} (binary)",
                      target_dir / "feature_importance_topk.png")
 
@@ -626,6 +628,10 @@ def run_multiclass_gnn(cell_df, sp_df, feature_cols, cluster_col, target_name,
         imp_mean["sem"] = imp_mean["std_importance"] / np.sqrt(len(all_imp_per_class[cn]))
         imp_mean["cluster"] = cn
         imp_mean.to_csv(target_dir / f"feature_importance_mean_cluster_{cn_safe}.csv", index=False)
+        # Save foldwise for comparative violin plots
+        imp_all.rename(columns={"importance": "importance_fold"}).assign(cluster=cn).to_csv(
+            target_dir / f"feature_importance_foldwise_cluster_{cn_safe}.csv", index=False
+        )
         _plot_importance(imp_mean, top_k, f"{target_name} cluster '{cn}' top-{top_k}",
                          target_dir / f"feature_importance_topk_cluster_{cn_safe}.png")
 

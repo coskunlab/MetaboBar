@@ -32,38 +32,47 @@ def _safe(s: str) -> str:
 
 def _load_binary_importance(sample_dir: Path, sample_name: str) -> Dict[str, pd.DataFrame]:
     """
-    Load all feature_importance_mean.csv files from
-    <sample_dir>/gnn_explainability/binary/<marker>/
-    Returns {marker_name: DataFrame with columns [feature, mean_importance, sem, sample]}
+    Load feature_importance_mean.csv and feature_importance_foldwise.csv
+    from <sample_dir>/gnn_explainability/binary/<marker>/
+    Returns {marker_name: {"mean": df, "foldwise": df}}
     """
     gnn_dir = sample_dir / "gnn_explainability" / "binary"
-    out: Dict[str, pd.DataFrame] = {}
+    out: Dict[str, dict] = {}
     if not gnn_dir.exists():
         return out
     for marker_dir in gnn_dir.iterdir():
         if not marker_dir.is_dir():
             continue
-        csv = marker_dir / "feature_importance_mean.csv"
-        if not csv.exists():
+        mean_csv = marker_dir / "feature_importance_mean.csv"
+        fold_csv = marker_dir / "feature_importance_foldwise.csv"
+        if not mean_csv.exists():
             continue
-        df = pd.read_csv(str(csv))
-        if "feature" not in df.columns or "mean_importance" not in df.columns:
+        mean_df = pd.read_csv(str(mean_csv))
+        if "feature" not in mean_df.columns or "mean_importance" not in mean_df.columns:
             continue
-        df = df[["feature", "mean_importance", "sem"]].copy() if "sem" in df.columns else df[["feature", "mean_importance"]].assign(sem=0.0)
-        df["sample"] = sample_name
-        df["marker"] = marker_dir.name
-        out[marker_dir.name] = df
+        mean_df = mean_df[["feature", "mean_importance"]].copy()
+        if "sem" in pd.read_csv(str(mean_csv), nrows=0).columns:
+            mean_df["sem"] = pd.read_csv(str(mean_csv))["sem"]
+        else:
+            mean_df["sem"] = 0.0
+        mean_df["sample"] = sample_name
+
+        fold_df = pd.DataFrame()
+        if fold_csv.exists():
+            fold_df = pd.read_csv(str(fold_csv))
+            fold_df["sample"] = sample_name
+
+        out[marker_dir.name] = {"mean": mean_df, "foldwise": fold_df}
     return out
 
 
-def _load_multiclass_importance(sample_dir: Path, sample_name: str) -> Dict[str, Dict[str, pd.DataFrame]]:
+def _load_multiclass_importance(sample_dir: Path, sample_name: str) -> Dict[str, Dict[str, dict]]:
     """
-    Load all feature_importance_mean_cluster_*.csv files from
-    <sample_dir>/gnn_explainability/multiclass/<target>/
-    Returns {target_name: {cluster_name: DataFrame}}
+    Load mean and foldwise importance for multiclass results.
+    Returns {target_name: {cluster_name: {"mean": df, "foldwise": df}}}
     """
     gnn_dir = sample_dir / "gnn_explainability" / "multiclass"
-    out: Dict[str, Dict[str, pd.DataFrame]] = {}
+    out: Dict[str, Dict[str, dict]] = {}
     if not gnn_dir.exists():
         return out
     for target_dir in gnn_dir.iterdir():
@@ -71,15 +80,22 @@ def _load_multiclass_importance(sample_dir: Path, sample_name: str) -> Dict[str,
             continue
         target_name = target_dir.name
         out[target_name] = {}
-        for csv in target_dir.glob("feature_importance_mean_cluster_*.csv"):
-            cluster_name = csv.stem.replace("feature_importance_mean_cluster_", "")
-            df = pd.read_csv(str(csv))
+        for mean_csv in target_dir.glob("feature_importance_mean_cluster_*.csv"):
+            cluster_name = mean_csv.stem.replace("feature_importance_mean_cluster_", "")
+            fold_csv = target_dir / f"feature_importance_foldwise_cluster_{cluster_name}.csv"
+            df = pd.read_csv(str(mean_csv))
             if "feature" not in df.columns or "mean_importance" not in df.columns:
                 continue
-            df = df[["feature", "mean_importance", "sem"]].copy() if "sem" in df.columns else df[["feature", "mean_importance"]].assign(sem=0.0)
-            df["sample"] = sample_name
-            df["cluster"] = cluster_name
-            out[target_name][cluster_name] = df
+            mean_df = df[["feature", "mean_importance"]].copy()
+            mean_df["sem"] = df["sem"] if "sem" in df.columns else 0.0
+            mean_df["sample"] = sample_name
+
+            fold_df = pd.DataFrame()
+            if fold_csv.exists():
+                fold_df = pd.read_csv(str(fold_csv))
+                fold_df["sample"] = sample_name
+
+            out[target_name][cluster_name] = {"mean": mean_df, "foldwise": fold_df}
     return out
 
 
@@ -171,43 +187,104 @@ def _importance_heatmap(
 
 
 def _violin_plot(
-    merged: pd.DataFrame,
+    merged_foldwise: pd.DataFrame,
     sample_names: List[str],
     title: str,
     save_path: Path,
     top_n: int = 10,
 ) -> None:
     """
-    Violin plot: one violin per sample for each of the top-N features.
-    Long-format: feature × sample → importance value.
+    Violin plot matching the notebook style:
+    - Features on x-axis (top-N by mean importance)
+    - Samples as grouped colored violins per feature
+    - Fold-wise attribution on y-axis
+    - Statistical significance brackets (Mann-Whitney U)
     """
-    val_cols = [s for s in sample_names if s in merged.columns]
-    if not val_cols:
+    from scipy import stats as _stats
+    from itertools import combinations
+
+    if merged_foldwise.empty:
         return
-    merged = merged.copy()
-    merged["_mean"] = merged[val_cols].mean(axis=1)
-    top = merged.nlargest(top_n, "_mean")
 
-    # Melt to long format
-    long = top.melt(id_vars=["feature"], value_vars=val_cols,
-                    var_name="sample", value_name="importance")
-
-    fig, ax = plt.subplots(figsize=(max(6, len(val_cols) * 1.5),
-                                    max(4, top_n * 0.5)))
-    sns.violinplot(
-        data=long, x="importance", y="feature", hue="sample",
-        ax=ax, orient="h", inner="box", cut=0,
-        palette="tab10", linewidth=0.8,
+    # Find top-N features by mean importance across all samples
+    mean_per_feat = (
+        merged_foldwise.groupby("feature")["importance"].mean()
+        .nlargest(top_n)
     )
+    top_features = list(mean_per_feat.index)
+    df = merged_foldwise[merged_foldwise["feature"].isin(top_features)].copy()
+    df["feature"] = pd.Categorical(df["feature"], categories=top_features, ordered=True)
+    df = df.sort_values("feature")
+
+    n_feat = len(top_features)
+    n_samp = len(sample_names)
+    colors = plt.cm.tab10(np.linspace(0, 0.9, n_samp))
+    color_map = {s: colors[i] for i, s in enumerate(sample_names)}
+
+    fig, ax = plt.subplots(figsize=(max(8, n_feat * 1.2), 5))
+
+    # Draw violins manually so we can control x positions
+    width = 0.7 / n_samp
+    for fi, feat in enumerate(top_features):
+        for si, sname in enumerate(sample_names):
+            vals = df[(df["feature"] == feat) & (df["sample"] == sname)]["importance"].dropna().values
+            if len(vals) < 2:
+                # Just plot a dot
+                x = fi + (si - n_samp / 2 + 0.5) * width
+                ax.scatter([x], [vals[0]] if len(vals) == 1 else [0],
+                           color=color_map[sname], s=20, zorder=3)
+                continue
+            x_center = fi + (si - n_samp / 2 + 0.5) * width
+            parts = ax.violinplot([vals], positions=[x_center], widths=width * 0.85,
+                                  showmedians=True, showextrema=False)
+            for pc in parts["bodies"]:
+                pc.set_facecolor(color_map[sname])
+                pc.set_alpha(0.75)
+            parts["cmedians"].set_color("black")
+            parts["cmedians"].set_linewidth(1.2)
+            # Overlay jitter
+            jitter = np.random.default_rng(42 + fi + si).uniform(-width * 0.2, width * 0.2, len(vals))
+            ax.scatter(x_center + jitter, vals, color=color_map[sname],
+                       s=12, alpha=0.8, zorder=4, edgecolors="none")
+
+    # Significance brackets between all sample pairs for each feature
+    y_max_global = df["importance"].max() if not df.empty else 1.0
+    bracket_step = y_max_global * 0.08
+
+    for fi, feat in enumerate(top_features):
+        feat_data = {s: df[(df["feature"] == feat) & (df["sample"] == s)]["importance"].dropna().values
+                     for s in sample_names}
+        pairs = list(combinations(range(n_samp), 2))
+        y_bracket = y_max_global + bracket_step
+
+        for (i, j) in pairs:
+            a_vals = feat_data[sample_names[i]]
+            b_vals = feat_data[sample_names[j]]
+            if len(a_vals) < 2 or len(b_vals) < 2:
+                continue
+            _, p = _stats.mannwhitneyu(a_vals, b_vals, alternative="two-sided")
+            sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+
+            xi = fi + (i - n_samp / 2 + 0.5) * width
+            xj = fi + (j - n_samp / 2 + 0.5) * width
+            ax.plot([xi, xi, xj, xj], [y_bracket - bracket_step * 0.3,
+                                        y_bracket, y_bracket,
+                                        y_bracket - bracket_step * 0.3],
+                    color="black", linewidth=0.8)
+            ax.text((xi + xj) / 2, y_bracket + bracket_step * 0.05, sig,
+                    ha="center", va="bottom", fontsize=7)
+            y_bracket += bracket_step * 1.1
+
+    ax.set_xticks(range(n_feat))
+    ax.set_xticklabels(top_features, rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel("Fold-wise attribution")
     ax.set_title(title, fontsize=10)
-    ax.set_xlabel("Mean importance")
-    ax.set_ylabel("Feature")
-    ax.tick_params(axis="y", labelsize=7)
-    # Remove legend title
-    legend = ax.get_legend()
-    if legend:
-        legend.set_title("")
-    ax.grid(axis="x", alpha=0.3)
+    ax.grid(axis="y", alpha=0.3)
+
+    # Legend (no title)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=color_map[s]) for s in sample_names]
+    ax.legend(handles, sample_names, loc="upper right", fontsize=8, framealpha=0.7)
+
     plt.tight_layout()
     fig.savefig(str(save_path), dpi=150)
     plt.close(fig)
@@ -262,11 +339,17 @@ def run_binary_comparison(
 
         # Merge importance across samples
         dfs = []
+        fold_dfs = []
         for sname in sample_names:
             if marker in all_data[sname]:
-                df = all_data[sname][marker][["feature", "mean_importance", "sem"]].copy()
+                entry = all_data[sname][marker]
+                df = entry["mean"][["feature", "mean_importance", "sem"]].copy()
                 df = df.rename(columns={"mean_importance": sname, "sem": f"{sname}_sem"})
                 dfs.append(df)
+                if not entry["foldwise"].empty:
+                    fdf = entry["foldwise"][["feature", "importance", "fold"]].copy()
+                    fdf["sample"] = sname
+                    fold_dfs.append(fdf)
 
         if len(dfs) < 1:
             continue
@@ -297,12 +380,14 @@ def run_binary_comparison(
                             save_path=hm_path, top_n=top_n)
         saved_pngs.append(hm_path)
 
-        # Violin
+        # Violin using foldwise data
         vl_path = marker_dir / f"{_safe(marker)}__violin.png"
-        _violin_plot(merged, sample_names,
-                     title=f"{marker} — importance distribution",
-                     save_path=vl_path, top_n=min(top_n, 10))
-        saved_pngs.append(vl_path)
+        if fold_dfs:
+            foldwise_merged = pd.concat(fold_dfs, ignore_index=True)
+            _violin_plot(foldwise_merged, sample_names,
+                         title=f"{marker} — fold-wise attribution",
+                         save_path=vl_path, top_n=min(top_n, 10))
+            saved_pngs.append(vl_path)
 
         plots[marker] = saved_pngs
 
@@ -359,11 +444,20 @@ def run_multiclass_comparison(
             cluster_dir.mkdir(parents=True, exist_ok=True)
 
             dfs = []
+            fold_dfs = []
             for sname in sample_names:
                 if target in all_data[sname] and cluster in all_data[sname][target]:
-                    df = all_data[sname][target][cluster][["feature", "mean_importance", "sem"]].copy()
+                    entry = all_data[sname][target][cluster]
+                    df = entry["mean"][["feature", "mean_importance", "sem"]].copy()
                     df = df.rename(columns={"mean_importance": sname, "sem": f"{sname}_sem"})
                     dfs.append(df)
+                    if not entry["foldwise"].empty:
+                        fdf = entry["foldwise"].copy()
+                        # handle both column name variants
+                        imp_col = "importance_fold" if "importance_fold" in fdf.columns else "importance"
+                        fdf = fdf[["feature", imp_col, "fold"]].rename(columns={imp_col: "importance"})
+                        fdf["sample"] = sname
+                        fold_dfs.append(fdf)
 
             if len(dfs) < 1:
                 continue
@@ -392,10 +486,12 @@ def run_multiclass_comparison(
             saved_pngs.append(hm_path)
 
             vl_path = cluster_dir / f"{_safe(target)}__cluster_{_safe(cluster)}__violin.png"
-            _violin_plot(merged, sample_names,
-                         title=f"{target} | cluster {cluster} — distribution",
-                         save_path=vl_path, top_n=min(top_n, 10))
-            saved_pngs.append(vl_path)
+            if fold_dfs:
+                foldwise_merged = pd.concat(fold_dfs, ignore_index=True)
+                _violin_plot(foldwise_merged, sample_names,
+                             title=f"{target} | cluster {cluster} — fold-wise attribution",
+                             save_path=vl_path, top_n=min(top_n, 10))
+                saved_pngs.append(vl_path)
 
             plots[target][cluster] = saved_pngs
 
