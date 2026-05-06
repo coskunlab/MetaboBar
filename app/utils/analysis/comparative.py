@@ -1,11 +1,10 @@
 """
 Cross-sample comparative analysis of GNN explainability results.
 
-Loads feature_importance_mean.csv files from multiple sample result folders
-and generates comparison plots and CSVs.
+Loads feature_importance_mean.csv / feature_importance_foldwise.csv
+from multiple sample result folders and generates comparison plots and CSVs.
 
-Binary task:  one CSV per marker  → feature × sample importance
-Multiclass:   one CSV per cluster → feature × sample importance
+Binary task only: one CSV + plots per marker.
 """
 
 from __future__ import annotations
@@ -66,37 +65,9 @@ def _load_binary_importance(sample_dir: Path, sample_name: str) -> Dict[str, pd.
     return out
 
 
-def _load_multiclass_importance(sample_dir: Path, sample_name: str) -> Dict[str, Dict[str, dict]]:
-    """
-    Load mean and foldwise importance for multiclass results.
-    Returns {target_name: {cluster_name: {"mean": df, "foldwise": df}}}
-    """
-    gnn_dir = sample_dir / "gnn_explainability" / "multiclass"
-    out: Dict[str, Dict[str, dict]] = {}
-    if not gnn_dir.exists():
-        return out
-    for target_dir in gnn_dir.iterdir():
-        if not target_dir.is_dir():
-            continue
-        target_name = target_dir.name
-        out[target_name] = {}
-        for mean_csv in target_dir.glob("feature_importance_mean_cluster_*.csv"):
-            cluster_name = mean_csv.stem.replace("feature_importance_mean_cluster_", "")
-            fold_csv = target_dir / f"feature_importance_foldwise_cluster_{cluster_name}.csv"
-            df = pd.read_csv(str(mean_csv))
-            if "feature" not in df.columns or "mean_importance" not in df.columns:
-                continue
-            mean_df = df[["feature", "mean_importance"]].copy()
-            mean_df["sem"] = df["sem"] if "sem" in df.columns else 0.0
-            mean_df["sample"] = sample_name
 
-            fold_df = pd.DataFrame()
-            if fold_csv.exists():
-                fold_df = pd.read_csv(str(fold_csv))
-                fold_df["sample"] = sample_name
 
-            out[target_name][cluster_name] = {"mean": mean_df, "foldwise": fold_df}
-    return out
+
 
 
 # ---------------------------------------------------------------------------
@@ -395,105 +366,5 @@ def run_binary_comparison(
     return plots
 
 
-def run_multiclass_comparison(
-    sample_dirs: Dict[str, Path],
-    output_dir: Path,
-    top_n: int = 20,
-    status_cb=None,
-) -> Dict[str, Dict[str, List[Path]]]:
-    """
-    Compare multiclass GNN importance across samples.
 
-    Returns
-    -------
-    plots : {target_name: {cluster_name: [list of saved PNG paths]}}
-    """
-    def _s(m):
-        if status_cb: status_cb(m)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    sample_names = list(sample_dirs.keys())
-
-    _s("Loading multiclass importance data…")
-    all_data: Dict[str, Dict[str, Dict[str, pd.DataFrame]]] = {}
-    for sname, sdir in sample_dirs.items():
-        all_data[sname] = _load_multiclass_importance(sdir, sname)
-
-    # Find all targets
-    all_targets: set = set()
-    for sname in sample_names:
-        all_targets.update(all_data[sname].keys())
-
-    plots: Dict[str, Dict[str, List[Path]]] = {}
-
-    for target in sorted(all_targets):
-        _s(f"  Target: {target}…")
-        target_dir = output_dir / _safe(target)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        plots[target] = {}
-
-        # Find all clusters across samples for this target
-        all_clusters: set = set()
-        for sname in sample_names:
-            if target in all_data[sname]:
-                all_clusters.update(all_data[sname][target].keys())
-
-        for cluster in sorted(all_clusters):
-            _s(f"    Cluster: {cluster}…")
-            cluster_dir = target_dir / f"cluster_{_safe(cluster)}"
-            cluster_dir.mkdir(parents=True, exist_ok=True)
-
-            dfs = []
-            fold_dfs = []
-            for sname in sample_names:
-                if target in all_data[sname] and cluster in all_data[sname][target]:
-                    entry = all_data[sname][target][cluster]
-                    df = entry["mean"][["feature", "mean_importance", "sem"]].copy()
-                    df = df.rename(columns={"mean_importance": sname, "sem": f"{sname}_sem"})
-                    dfs.append(df)
-                    if not entry["foldwise"].empty:
-                        fdf = entry["foldwise"].copy()
-                        # handle both column name variants
-                        imp_col = "importance_fold" if "importance_fold" in fdf.columns else "importance"
-                        fdf = fdf[["feature", imp_col, "fold"]].rename(columns={imp_col: "importance"})
-                        fdf["sample"] = sname
-                        fold_dfs.append(fdf)
-
-            if len(dfs) < 1:
-                continue
-
-            merged = dfs[0]
-            for df in dfs[1:]:
-                merged = merged.merge(df, on="feature", how="outer")
-            merged = merged.fillna(0)
-
-            csv_path = cluster_dir / f"{_safe(target)}__cluster_{_safe(cluster)}__importance_comparison.csv"
-            merged.to_csv(str(csv_path), index=False)
-
-            saved_pngs = []
-
-            bar_path = cluster_dir / f"{_safe(target)}__cluster_{_safe(cluster)}__grouped_bar.png"
-            _grouped_bar(merged, sample_names,
-                         title=f"{target} | cluster {cluster} — importance across samples",
-                         xlabel="Mean importance ± SEM",
-                         save_path=bar_path, top_n=top_n)
-            saved_pngs.append(bar_path)
-
-            hm_path = cluster_dir / f"{_safe(target)}__cluster_{_safe(cluster)}__heatmap.png"
-            _importance_heatmap(merged, sample_names,
-                                title=f"{target} | cluster {cluster} — heatmap",
-                                save_path=hm_path, top_n=top_n)
-            saved_pngs.append(hm_path)
-
-            vl_path = cluster_dir / f"{_safe(target)}__cluster_{_safe(cluster)}__violin.png"
-            if fold_dfs:
-                foldwise_merged = pd.concat(fold_dfs, ignore_index=True)
-                _violin_plot(foldwise_merged, sample_names,
-                             title=f"{target} | cluster {cluster} — fold-wise attribution",
-                             save_path=vl_path, top_n=min(top_n, 10))
-                saved_pngs.append(vl_path)
-
-            plots[target][cluster] = saved_pngs
-
-    _s(f"Multiclass comparison done → {output_dir}")
-    return plots

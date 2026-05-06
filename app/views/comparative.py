@@ -13,7 +13,7 @@ from typing import Dict, List
 
 import streamlit as st
 
-from app.utils.analysis.comparative import run_binary_comparison, run_multiclass_comparison
+from app.utils.analysis.comparative import run_binary_comparison
 
 
 # ---------------------------------------------------------------------------
@@ -22,10 +22,9 @@ from app.utils.analysis.comparative import run_binary_comparison, run_multiclass
 
 def _init_state() -> None:
     for k, v in {
-        "comp_samples": {},          # {name: path_str}
+        "comp_samples": {},
         "comp_output_dir": "",
-        "comp_binary_plots": {},     # {marker: [png_paths]}
-        "comp_multi_plots": {},      # {target: {cluster: [png_paths]}}
+        "comp_binary_plots": {},
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -126,30 +125,16 @@ def render_comparative() -> None:
 
         st.divider()
 
-        # ---- Run buttons ----
+        # ---- Run button ----
         can_run = len(valid_samples) >= 2 and out_dir is not None
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            run_binary = st.button(
-                "Run Binary Comparison",
-                type="primary",
-                key="comp_run_binary",
-                disabled=not can_run,
-                use_container_width=True,
-            )
-
-        with col2:
-            run_multi = st.button(
-                "Run Multiclass Comparison",
-                type="primary",
-                key="comp_run_multi",
-                disabled=not can_run,
-                use_container_width=True,
-            )
-
-        if run_binary:
+        if st.button(
+            "Run Binary Comparison",
+            type="primary",
+            key="comp_run_binary",
+            disabled=not can_run,
+            use_container_width=True,
+        ):
             status   = st.empty()
             progress = st.progress(0.0, text="Starting binary comparison…")
             try:
@@ -169,27 +154,6 @@ def render_comparative() -> None:
                 status.error("Binary comparison failed.")
                 st.exception(e)
 
-        if run_multi:
-            status   = st.empty()
-            progress = st.progress(0.0, text="Starting multiclass comparison…")
-            try:
-                multi_out = out_dir / "multiclass"
-                plots = run_multiclass_comparison(
-                    sample_dirs=valid_samples,
-                    output_dir=multi_out,
-                    top_n=int(top_n),
-                    status_cb=lambda m: (status.info(m), progress.progress(0.5, text=m)),
-                )
-                st.session_state.comp_multi_plots = {
-                    t: {c: [str(p) for p in plist] for c, plist in cdict.items()}
-                    for t, cdict in plots.items()
-                }
-                progress.progress(1.0, text="Done.")
-                status.success(f"Multiclass comparison complete → {multi_out}")
-            except Exception as e:
-                status.error("Multiclass comparison failed.")
-                st.exception(e)
-
         # ---- Display results ----
         if st.session_state.comp_binary_plots:
             st.divider()
@@ -204,19 +168,3 @@ def render_comparative() -> None:
                             with img_cols[j % len(img_cols)]:
                                 st.caption(label)
                                 st.image(str(p), use_container_width=True)
-
-        if st.session_state.comp_multi_plots:
-            st.divider()
-            st.markdown("#### Multiclass comparison results")
-            for target, cluster_dict in sorted(st.session_state.comp_multi_plots.items()):
-                st.markdown(f"**{target}**")
-                for cluster, png_paths in sorted(cluster_dict.items()):
-                    with st.expander(f"Cluster: {cluster}", expanded=False):
-                        img_cols = st.columns(min(3, len(png_paths)))
-                        for j, png in enumerate(png_paths):
-                            p = Path(png)
-                            if p.exists():
-                                label = "Grouped bar" if "bar" in p.name else ("Violin" if "violin" in p.name else "Heatmap")
-                                with img_cols[j % len(img_cols)]:
-                                    st.caption(label)
-                                    st.image(str(p), use_container_width=True)
