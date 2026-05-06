@@ -20,6 +20,7 @@ import streamlit as st
 
 from app.components.sidebar import init_session_state, render_sidebar
 from app.views.analysis import render_analysis
+from app.views.comparative import render_comparative
 from app.views.gnn_explainability import render_gnn_explainability
 from app.views.napari_launch import render_napari_launch
 from app.views.positivity import render_positivity
@@ -39,10 +40,6 @@ init_session_state()
 
 # Header
 st.title("Metabobarcoding")
-st.caption(
-    "Load a multiplex IF image and a matching MSI image, "
-    "then inspect channels or RGB overlays side by side."
-)
 
 # Sidebar (returns display settings chosen by the user)
 display_settings = render_sidebar()
@@ -67,3 +64,6 @@ render_gnn_explainability()
 
 # Interactive napari viewer
 render_napari_launch()
+
+# Cross-sample comparative analysis
+render_comparative()
