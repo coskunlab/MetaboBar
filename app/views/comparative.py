@@ -196,11 +196,11 @@ def render_comparative() -> None:
             st.markdown("#### Binary comparison results")
             for marker, png_paths in sorted(st.session_state.comp_binary_plots.items()):
                 with st.expander(f"Marker: {marker}", expanded=False):
-                    img_cols = st.columns(min(2, len(png_paths)))
+                    img_cols = st.columns(min(3, len(png_paths)))
                     for j, png in enumerate(png_paths):
                         p = Path(png)
                         if p.exists():
-                            label = "Grouped bar" if "bar" in p.name else "Heatmap"
+                            label = "Grouped bar" if "bar" in p.name else ("Violin" if "violin" in p.name else "Heatmap")
                             with img_cols[j % len(img_cols)]:
                                 st.caption(label)
                                 st.image(str(p), use_container_width=True)
@@ -212,11 +212,11 @@ def render_comparative() -> None:
                 st.markdown(f"**{target}**")
                 for cluster, png_paths in sorted(cluster_dict.items()):
                     with st.expander(f"Cluster: {cluster}", expanded=False):
-                        img_cols = st.columns(min(2, len(png_paths)))
+                        img_cols = st.columns(min(3, len(png_paths)))
                         for j, png in enumerate(png_paths):
                             p = Path(png)
                             if p.exists():
-                                label = "Grouped bar" if "bar" in p.name else "Heatmap"
+                                label = "Grouped bar" if "bar" in p.name else ("Violin" if "violin" in p.name else "Heatmap")
                                 with img_cols[j % len(img_cols)]:
                                     st.caption(label)
                                     st.image(str(p), use_container_width=True)

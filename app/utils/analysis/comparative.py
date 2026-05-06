@@ -159,9 +159,55 @@ def _importance_heatmap(
     sns.heatmap(mat, ax=ax, cmap="viridis", linewidths=0.3,
                 cbar_kws={"label": "Mean importance"})
     ax.set_title(title, fontsize=10)
-    ax.set_xlabel("Sample")
+    ax.set_xlabel("")
+    ax.set_ylabel("Feature")
+    ax.tick_params(axis="x", rotation=90, labelsize=8)
+    ax.tick_params(axis="y", labelsize=7)
+    # Remove colorbar title (legend title equivalent)
+    ax.collections[0].colorbar.set_label("")
+    plt.tight_layout()
+    fig.savefig(str(save_path), dpi=150)
+    plt.close(fig)
+
+
+def _violin_plot(
+    merged: pd.DataFrame,
+    sample_names: List[str],
+    title: str,
+    save_path: Path,
+    top_n: int = 10,
+) -> None:
+    """
+    Violin plot: one violin per sample for each of the top-N features.
+    Long-format: feature × sample → importance value.
+    """
+    val_cols = [s for s in sample_names if s in merged.columns]
+    if not val_cols:
+        return
+    merged = merged.copy()
+    merged["_mean"] = merged[val_cols].mean(axis=1)
+    top = merged.nlargest(top_n, "_mean")
+
+    # Melt to long format
+    long = top.melt(id_vars=["feature"], value_vars=val_cols,
+                    var_name="sample", value_name="importance")
+
+    fig, ax = plt.subplots(figsize=(max(6, len(val_cols) * 1.5),
+                                    max(4, top_n * 0.5)))
+    sns.violinplot(
+        data=long, x="importance", y="feature", hue="sample",
+        ax=ax, orient="h", inner="box", cut=0,
+        palette="tab10", linewidth=0.8,
+    )
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel("Mean importance")
     ax.set_ylabel("Feature")
     ax.tick_params(axis="y", labelsize=7)
+    # Remove legend title
+    legend = ax.get_legend()
+    if legend:
+        legend.set_title("")
+    ax.grid(axis="x", alpha=0.3)
     plt.tight_layout()
     fig.savefig(str(save_path), dpi=150)
     plt.close(fig)
@@ -251,6 +297,13 @@ def run_binary_comparison(
                             save_path=hm_path, top_n=top_n)
         saved_pngs.append(hm_path)
 
+        # Violin
+        vl_path = marker_dir / f"{_safe(marker)}__violin.png"
+        _violin_plot(merged, sample_names,
+                     title=f"{marker} — importance distribution",
+                     save_path=vl_path, top_n=min(top_n, 10))
+        saved_pngs.append(vl_path)
+
         plots[marker] = saved_pngs
 
     _s(f"Binary comparison done → {output_dir}")
@@ -337,6 +390,12 @@ def run_multiclass_comparison(
                                 title=f"{target} | cluster {cluster} — heatmap",
                                 save_path=hm_path, top_n=top_n)
             saved_pngs.append(hm_path)
+
+            vl_path = cluster_dir / f"{_safe(target)}__cluster_{_safe(cluster)}__violin.png"
+            _violin_plot(merged, sample_names,
+                         title=f"{target} | cluster {cluster} — distribution",
+                         save_path=vl_path, top_n=min(top_n, 10))
+            saved_pngs.append(vl_path)
 
             plots[target][cluster] = saved_pngs
 
