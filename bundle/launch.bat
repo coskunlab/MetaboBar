@@ -23,6 +23,22 @@ REM ---- Activate torch_gpu3 env ----
 set PYTHON=%BUNDLE_ROOT%envs\torch_gpu3\python.exe
 set PATH=%BUNDLE_ROOT%envs\torch_gpu3;%BUNDLE_ROOT%envs\torch_gpu3\Scripts;%BUNDLE_ROOT%envs\torch_gpu3\Library\bin;%PATH%
 
+REM ---- Verify Python and Streamlit are available ----
+if not exist "%PYTHON%" (
+    echo ERROR: Python not found at %PYTHON%
+    echo Please re-run build_bundle.bat to rebuild the bundle.
+    pause
+    exit /b 1
+)
+
+"%PYTHON%" -c "import streamlit" 2>nul
+if errorlevel 1 (
+    echo ERROR: Streamlit is not installed in the bundled environment.
+    echo Please re-run build_bundle.bat to rebuild the bundle.
+    pause
+    exit /b 1
+)
+
 REM ---- Start Streamlit ----
 echo.
 echo ============================================================
@@ -37,9 +53,6 @@ echo.
     --server.port 8501 ^
     --browser.gatherUsageStats false
 
-REM If Streamlit exits, keep window open so user can see any errors
-if errorlevel 1 (
-    echo.
-    echo The app exited with an error. See above for details.
-    pause
-)
+echo.
+echo The app has stopped. See above for any errors.
+pause
