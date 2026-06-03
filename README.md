@@ -69,14 +69,10 @@ MetaBar provides a complete 12-step workflow:
 
 ## Citation
 
-If you use MetaBar in your research, please cite:
-
-> Ozturk et al. (2026). *MetaBar: Interactive application for multimodal spatial omics processing and metabolic barcode generation.* Nature Communications.
-
 ---
 
 ## Contact
 
 For questions or bug reports, please open an [issue](https://github.com/coskunlab/MetaBar/issues).
 
-Coskun Lab · School of Biological Sciences · Georgia Institute of Technology
+Coskun Lab · Georgia Institute of Technology
