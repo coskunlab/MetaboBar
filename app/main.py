@@ -30,7 +30,7 @@ from app.views.viewer import render_viewer
 
 # Page config must be the very first Streamlit call
 st.set_page_config(
-    page_title="Metabobarcoding",
+    page_title="MetaBar",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -39,7 +39,7 @@ st.set_page_config(
 init_session_state()
 
 # Header
-st.title("Metabobarcoding")
+st.title("MetaBar")
 
 # Sidebar (returns display settings chosen by the user)
 display_settings = render_sidebar()

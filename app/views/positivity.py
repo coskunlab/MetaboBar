@@ -48,7 +48,7 @@ def render_positivity() -> None:
     )
     ana_out = st.session_state.get("ana_output_dir", "").strip()
 
-    if not msi_labels and not ana_out:
+    if not msi_labels:
         return
 
     with st.expander("Positivity Thresholding", expanded=False):

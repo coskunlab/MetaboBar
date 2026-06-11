@@ -506,10 +506,14 @@ def train_one_fold_multiclass(base_data, y_all, feature_names, target_name, fold
 def _build_base(cell_df, sp_df, feature_cols, radius_um, pixel_size_um,
                 standardize, log1p, output_dir, status_cb):
     cell_id_col = cell_df.columns[0]
-    sp_id_col   = sp_df.columns[0]
     cx_col, cy_col = _find_coord_cols(cell_df)
 
-    if status_cb: status_cb("Building mixed cell+superpixel graph…")
+    # sp_df is optional — if empty, build a cell-only graph
+    if sp_df is None or len(sp_df) == 0:
+        sp_df = pd.DataFrame(columns=[cell_id_col, cx_col, cy_col] + feature_cols)
+    sp_id_col = sp_df.columns[0]
+
+    if status_cb: status_cb("Building spatial graph…")
     (edge_tensor, cell_xy, sp_xy, n_cells, n_sp, n_nodes,
      node_type, node_ids, coords_all) = build_mixed_graph(
         cell_df, sp_df, cell_id_col, sp_id_col, cx_col, cy_col,

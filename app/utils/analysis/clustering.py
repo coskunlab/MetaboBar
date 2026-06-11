@@ -165,9 +165,9 @@ def _save_colored_mask(label_mask, ids, labels, cmap, path, white_boundaries=Fal
 
 def run_clustering(
     cell_csv: Path,
-    superpixel_csv: Path,
+    superpixel_csv: Optional[Path],
     cell_label_mask_path: Path,
-    superpixel_label_mask_path: Path,
+    superpixel_label_mask_path: Optional[Path],
     channel_labels: List[str],
     output_dir: Path,
     n_pcs: int = 10,
@@ -191,9 +191,13 @@ def run_clustering(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     configs = [
-        ("cells",       cell_csv,       cell_label_mask_path,       "cell_id",       False),
-        ("superpixels", superpixel_csv, superpixel_label_mask_path, "superpixel_id", True),
+        ("cells", cell_csv, cell_label_mask_path, "cell_id", False),
     ]
+    # Only include superpixels if a CSV was provided and exists
+    if superpixel_csv is not None and Path(superpixel_csv).exists():
+        configs.append(
+            ("superpixels", superpixel_csv, superpixel_label_mask_path, "superpixel_id", True)
+        )
 
     for name, csv_path, mask_path, id_col, white_bounds in configs:
         _s(f"Clustering {name}…")

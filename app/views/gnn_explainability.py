@@ -26,6 +26,7 @@ def _init_state() -> None:
         "gnn_output_dir": "",
         "gnn_binary_results": {},   # marker -> summary dict
         "gnn_multi_results":  {},   # target_name -> summary dict
+        "gnn_ann_results":    {},   # target_name -> summary dict
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -35,14 +36,22 @@ def _init_state() -> None:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _get_sp_df_or_empty(cell_csv: Path, sp_csv: Path, feature_cols: list) -> "pd.DataFrame":
+    """Load superpixel CSV if it exists, otherwise return an empty DataFrame."""
+    if sp_csv.exists():
+        return pd.read_csv(sp_csv)
+    # Build a minimal empty DF with the right columns so _build_base doesn't crash
+    cell_df = pd.read_csv(cell_csv, nrows=1)
+    cx_col = "centroid_x" if "centroid_x" in cell_df.columns else cell_df.columns[1]
+    cy_col = "centroid_y" if "centroid_y" in cell_df.columns else cell_df.columns[2]
+    return pd.DataFrame(columns=["superpixel_id", cx_col, cy_col] + feature_cols)
+
+
 def _get_paths(out_dir: Path):
     """Return (cell_csv, sp_csv) from the standard output folder structure."""
     cell_csv = out_dir / "projection" / "cell_level_metabolic_table__nuclear_expanded__mean.csv"
     sp_csv   = out_dir / "superpixels" / "mbp_superpixels_mean_intensity_matrix.csv"
     return cell_csv, sp_csv
-
-
-def _discover_cluster_cols(out_dir: Path) -> List[str]:
     """Find all leiden_res_* and kmeans_k_* columns from the clustered CSV."""
     clustered = out_dir / "clustering" / "cells" / "cells__clustered.csv"
     if not clustered.exists():
@@ -123,7 +132,7 @@ def _tab_binary(out_dir: Optional[Path], msi_labels: List[str]) -> None:
     cell_csv, sp_csv = _get_paths(out_dir)
     binary_csv = out_dir / "positivity" / "cell_binary_labels.csv"
 
-    missing = [str(p) for p in [cell_csv, sp_csv, binary_csv] if not p.exists()]
+    missing = [str(p) for p in [cell_csv, binary_csv] if not p.exists()]
     if missing:
         st.warning(f"Missing files:\n" + "\n".join(f"  • {m}" for m in missing))
         return
@@ -180,7 +189,7 @@ def _tab_binary(out_dir: Optional[Path], msi_labels: List[str]) -> None:
 
         try:
             cell_df = pd.read_csv(cell_csv)
-            sp_df   = pd.read_csv(sp_csv)
+            sp_df   = _get_sp_df_or_empty(cell_csv, sp_csv, feature_cols_selected)
             bin_df  = pd.read_csv(binary_csv)
 
             # Merge binary labels into cell_df
@@ -260,7 +269,7 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
     cell_csv, sp_csv = _get_paths(out_dir)
     clustered_csv = out_dir / "clustering" / "cells" / "cells__clustered.csv"
 
-    missing = [str(p) for p in [cell_csv, sp_csv, clustered_csv] if not p.exists()]
+    missing = [str(p) for p in [cell_csv, clustered_csv] if not p.exists()]
     if missing:
         st.warning(f"Missing files:\n" + "\n".join(f"  • {m}" for m in missing))
         return
@@ -306,7 +315,7 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
 
         try:
             cell_df     = pd.read_csv(cell_csv)
-            sp_df       = pd.read_csv(sp_csv)
+            sp_df       = _get_sp_df_or_empty(cell_csv, sp_csv, multi_feat_cols)
             clustered   = pd.read_csv(clustered_csv)
 
             # Merge cluster labels into cell_df
@@ -374,6 +383,143 @@ def _tab_multiclass(out_dir: Optional[Path], msi_labels: List[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tab 3 – Annotations (multiclass)
+# ---------------------------------------------------------------------------
+
+def _tab_annotations(out_dir: Optional[Path], msi_labels: List[str]) -> None:
+    st.markdown("#### Annotations GNN (multiclass classification)")
+    st.caption(
+        "Trains a GNN to predict cell phenotype / annotation labels. "
+        "Uses the annotation file saved in the Custom Data tab (or any column "
+        "in the clustering CSV that isn't a Leiden/KMeans result). "
+        "Per-class feature importance shows which MSI channels characterise each annotation group."
+    )
+
+    if out_dir is None:
+        st.warning("Set the results root folder above.")
+        return
+
+    cell_csv, sp_csv = _get_paths(out_dir)
+    if not cell_csv.exists():
+        st.warning(f"Cell table not found: {cell_csv}\nRun the Analysis Pipeline first.")
+        return
+
+    clustered_csv = out_dir / "annotations" / "cells" / "cells__clustered.csv"
+
+    # Discover annotation columns: any column in cells__clustered.csv that is
+    # NOT a leiden_res_* or kmeans_k_* column (and not cell_id / coordinate cols)
+    ann_cols: List[str] = []
+    if clustered_csv.exists():
+        try:
+            df_head = pd.read_csv(clustered_csv, nrows=0)
+            skip = {"cell_id", "centroid_x", "centroid_y", "area_px", "UMAP1", "UMAP2"}
+            skip_re = re.compile(r"leiden_res_.+|kmeans_k_.+|PC\d+")
+            ann_cols = [c for c in df_head.columns
+                        if c not in skip and not skip_re.fullmatch(c)]
+        except Exception:
+            pass
+
+    if not ann_cols:
+        st.warning(
+            "No annotation columns found in `annotations/cells/cells__clustered.csv`. "
+            "Upload an annotation file in the **Custom Data** tab first."
+        )
+        return
+
+    selected_col = st.selectbox(
+        "Annotation column to use as labels",
+        options=ann_cols,
+        key="gnn_ann_col",
+        help="Select the phenotype/annotation column to use as the classification target.",
+    )
+    target_name = f"annotation_{selected_col}"
+
+    st.markdown("**Node features (MSI channels)**")
+    ann_feat_cols = st.multiselect(
+        "Feature channels",
+        options=msi_labels,
+        default=msi_labels,
+        key="gnn_ann_feat_cols",
+    )
+    if not ann_feat_cols:
+        st.warning("Select at least one feature channel.")
+        return
+
+    params = _shared_params("ann")
+    gnn_out_dir = out_dir / "gnn_explainability" / "annotations"
+
+    if st.button("Run Annotation GNN", type="primary", key="gnn_ann_run",
+                 use_container_width=True):
+        status   = st.empty()
+        progress = st.progress(0.0, text="Starting…")
+
+        try:
+            cell_df   = pd.read_csv(cell_csv)
+            sp_df     = _get_sp_df_or_empty(cell_csv, sp_csv, ann_feat_cols)
+            clustered = pd.read_csv(clustered_csv)  # annotations/cells/cells__clustered.csv
+
+            if "cell_id" not in clustered.columns or selected_col not in clustered.columns:
+                st.error(f"Clustered CSV missing 'cell_id' or '{selected_col}' column.")
+                return
+
+            cell_df = cell_df.merge(clustered[["cell_id", selected_col]],
+                                    on="cell_id", how="left")
+            cell_df = cell_df.dropna(subset=[selected_col]).reset_index(drop=True)
+
+            feat_cols = [c for c in ann_feat_cols
+                         if c in cell_df.columns and (len(sp_df) == 0 or c in sp_df.columns)]
+            if not feat_cols:
+                st.error("None of the selected feature channels were found in the cell table.")
+                return
+
+            n_classes = cell_df[selected_col].nunique()
+            progress.progress(0.05, text=f"Running {target_name} ({n_classes} classes)…")
+
+            summary = run_multiclass_gnn(
+                cell_df=cell_df,
+                sp_df=sp_df,
+                feature_cols=feat_cols,
+                cluster_col=selected_col,
+                target_name=target_name,
+                output_dir=gnn_out_dir,
+                **params,
+                status_cb=_status_cb(status),
+            )
+            st.session_state.gnn_ann_results[target_name] = summary
+            progress.progress(1.0, text="Done.")
+            status.success(f"Annotation GNN complete. Results saved to {gnn_out_dir}")
+
+        except Exception as e:
+            status.error("Annotation GNN failed.")
+            st.exception(e)
+
+    # Results
+    if st.session_state.get("gnn_ann_results"):
+        st.divider()
+        st.markdown("**Results**")
+        rows = []
+        for tn, s in st.session_state.gnn_ann_results.items():
+            rows.append({
+                "Target":    tn,
+                "Classes":   s.get("num_classes", "?"),
+                "Output dir": s.get("output_dir", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+        for tn, s in st.session_state.gnn_ann_results.items():
+            out_path = Path(s.get("output_dir", ""))
+            pngs = sorted(out_path.glob("feature_importance_topk_cluster_*.png"))
+            if pngs:
+                with st.expander(f"Feature importance — {tn}", expanded=False):
+                    cols = st.columns(min(3, len(pngs)))
+                    for j, png in enumerate(pngs):
+                        cluster_name = png.stem.replace("feature_importance_topk_cluster_", "")
+                        with cols[j % len(cols)]:
+                            st.caption(f"Class: {cluster_name}")
+                            st.image(str(png), use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -386,7 +532,7 @@ def render_gnn_explainability() -> None:
     )
     ana_out = st.session_state.get("ana_output_dir", "").strip()
 
-    if not msi_labels and not ana_out:
+    if not msi_labels:
         return
 
     with st.expander("GNN Explainability", expanded=False):
@@ -409,10 +555,17 @@ def render_gnn_explainability() -> None:
 
         st.divider()
 
-        tab_bin, tab_multi = st.tabs(["Positivity (binary)", "Clustering (multiclass)"])
+        tab_bin, tab_multi, tab_ann = st.tabs([
+            "Positivity (binary)",
+            "Clustering (multiclass)",
+            "Annotations (multiclass)",
+        ])
 
         with tab_bin:
             _tab_binary(out_dir, msi_labels)
 
         with tab_multi:
             _tab_multiclass(out_dir, msi_labels)
+
+        with tab_ann:
+            _tab_annotations(out_dir, msi_labels)

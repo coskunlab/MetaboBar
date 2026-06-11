@@ -1,6 +1,6 @@
 """
 Analysis view — 6-tab pipeline:
-  1. Cell Segmentation (Mesmer)
+  1. Cell Segmentation
   2. Nuclei Expansion
   3. MBP Mask
   4. LR→HR Projection
@@ -130,11 +130,8 @@ def _tiff_download_button(label: str, arr: np.ndarray, filename: str, key: str) 
 # ---------------------------------------------------------------------------
 
 def _tab_segmentation(if_stack, if_labels):
-    st.markdown("#### Cell Segmentation (Mesmer)")
-    st.caption(
-        "Runs nuclear segmentation using DeepCell Mesmer in the `mesmer` conda env. "
-        "GPU is tried first; falls back to CPU automatically."
-    )
+    st.markdown("#### Cell Segmentation")
+    st.caption("Runs nuclear segmentation using the DeepCell Mesmer model.")
 
     if if_stack is None:
         st.warning("Load an IF image first.")
@@ -210,6 +207,13 @@ def _tab_segmentation(if_stack, if_labels):
             )
             st.session_state.ana_nuclear_labeled = labeled
             st.session_state.ana_nuclear_binary  = binary
+            # Save IF stack to output dir for napari
+            if_save_path = seg_dir / "if_stack.tif"
+            if not if_save_path.exists():
+                tiff.imwrite(str(if_save_path), if_stack)
+                if st.session_state.get("if_path"):
+                    import shutil
+                    st.session_state["if_path"] = str(if_save_path)
             progress.progress(1.0, text="Segmentation complete.")
             status.success(f"Segmentation complete — {int(labeled.max()):,} cells. "
                            f"Saved to {seg_dir}")
@@ -586,16 +590,19 @@ def _tab_clustering(msi_labels):
     st.markdown("#### Clustering (PCA + UMAP + Leiden + KMeans)")
 
     if st.session_state.ana_cell_csv is None:
-        st.warning("Run LR→HR projection first.")
-        return
-    if st.session_state.ana_sp_stats_csv is None:
-        st.warning("Run superpixel segmentation first.")
+        st.warning("Run LR→HR projection first (or upload a custom cell table below).")
         return
 
     out_dir = _output_dir()
     if out_dir is None:
         st.warning("Set an output folder above.")
         return
+
+    # Superpixels are optional — show a note if not available
+    sp_csv = st.session_state.ana_sp_stats_csv
+    sp_mask = st.session_state.ana_sp_label_mask
+    if sp_csv is None:
+        st.info("Superpixel segmentation not run — clustering will run on cells only.")
 
     st.caption(f"{len(msi_labels)} MSI channels available.")
 
@@ -661,9 +668,9 @@ def _tab_clustering(msi_labels):
 
             run_clustering(
                 cell_csv=Path(st.session_state.ana_cell_csv),
-                superpixel_csv=Path(st.session_state.ana_sp_stats_csv),
+                superpixel_csv=Path(sp_csv) if sp_csv else None,
                 cell_label_mask_path=Path(out_dir / "segmentation" / "nuclear_mask_expanded.tif"),
-                superpixel_label_mask_path=Path(st.session_state.ana_sp_label_mask),
+                superpixel_label_mask_path=Path(sp_mask) if sp_mask else None,
                 channel_labels=selected_labels,
                 output_dir=cl_dir,
                 n_pcs=int(n_pcs),
@@ -680,6 +687,239 @@ def _tab_clustering(msi_labels):
         except Exception as e:
             status.error("Clustering failed.")
             st.exception(e)
+
+
+# ---------------------------------------------------------------------------
+# Tab 7 – Custom Data (masks + annotation CSV)
+# ---------------------------------------------------------------------------
+
+def _tab_custom_data(if_stack, msi_stack, msi_labels, if_labels):
+    st.markdown("#### Custom Masks & Annotations")
+    st.caption(
+        "Upload your own cell mask and/or annotation file. "
+        "After uploading a mask, the app will run MSI projection and cell quantification "
+        "automatically — no need to run the full segmentation pipeline."
+    )
+
+    out_dir = _output_dir()
+    if out_dir is None:
+        st.warning("Set an output folder above first.")
+        return
+
+    seg_dir  = out_dir / "segmentation"
+    proj_dir = out_dir / "projection"
+
+    # ── Custom cell mask ─────────────────────────────────────────────────
+    st.markdown("##### Step 1 — Upload cell mask (TIFF)")
+    st.caption(
+        "A 2-D integer label TIFF where each pixel value is the cell ID (0 = background)."
+    )
+
+    nuclear_file = st.file_uploader(
+        "Cell mask TIFF", type=["tif", "tiff"], key="custom_nuclear_mask"
+    )
+
+    # Expansion options
+    do_expand = st.checkbox("Expand mask before quantification", value=False,
+                            key="custom_do_expand",
+                            help="Expands each cell outward by the specified distance. "
+                                 "Projection and quantification will use the expanded mask.")
+    if do_expand:
+        exp_col1, exp_col2 = st.columns(2)
+        with exp_col1:
+            expand_um = st.number_input("Expansion distance (µm)", 1.0, 100.0, 15.0, 1.0,
+                                        key="custom_expand_um")
+        with exp_col2:
+            pixel_um = st.number_input("Pixel size (µm/px)", 0.1, 20.0, 2.6, 0.1,
+                                       key="custom_pixel_um")
+        st.caption(f"Expansion in pixels: {expand_um / pixel_um:.1f} px")
+
+    if st.button("Save mask & run projection", key="custom_mask_save",
+                 disabled=(nuclear_file is None)):
+        import tifffile as _tiff
+        import numpy as _np
+
+        if msi_stack is None:
+            st.error("Load an MSI stack first (needed for projection).")
+        elif if_stack is None:
+            st.error("Load an IF image first (needed to know the target resolution).")
+        else:
+            seg_dir.mkdir(parents=True, exist_ok=True)
+            status = st.empty()
+            progress = st.progress(0.0, text="Saving mask…")
+
+            nuc_arr = _np.squeeze(_tiff.imread(nuclear_file)).astype(_np.int32)
+            bin_arr = (nuc_arr > 0).astype(_np.uint8)
+
+            # Always save the nuclear mask as-is
+            _tiff.imwrite(str(seg_dir / "nuclear_mask.tif"), nuc_arr)
+            _tiff.imwrite(str(seg_dir / "nuclear_mask_binary.tif"), bin_arr)
+
+            st.session_state.ana_nuclear_labeled = nuc_arr
+            st.session_state.ana_nuclear_binary  = bin_arr.astype(bool)
+
+            if do_expand:
+                progress.progress(0.10, text="Expanding mask…")
+                status.info("Expanding mask…")
+                from app.utils.analysis.masks import expand_nuclear_mask as _expand
+                exp_arr, exp_bin = _expand(
+                    labeled_mask=nuc_arr,
+                    tissue_mask=None,
+                    expand_um=float(expand_um),
+                    pixel_size_um=float(pixel_um),
+                    output_dir=seg_dir,
+                )
+                quant_labeled = exp_arr
+                quant_binary  = exp_bin.astype(bool)
+                st.session_state.ana_nuclear_expanded        = exp_arr
+                st.session_state.ana_nuclear_expanded_binary = exp_bin.astype(bool)
+                status.info(f"Mask expanded ({expand_um} µm = {expand_um/pixel_um:.1f} px). Running projection…")
+            else:
+                # No expansion — write the nuclear mask as the expanded mask too
+                _tiff.imwrite(str(seg_dir / "nuclear_mask_expanded.tif"), nuc_arr)
+                _tiff.imwrite(str(seg_dir / "nuclear_mask_expanded_binary.tif"), bin_arr)
+                quant_labeled = nuc_arr
+                quant_binary  = bin_arr.astype(bool)
+                st.session_state.ana_nuclear_expanded        = nuc_arr
+                st.session_state.ana_nuclear_expanded_binary = bin_arr.astype(bool)
+
+            n_cells = int(nuc_arr.max())
+            progress.progress(0.15, text=f"Mask ready — {n_cells:,} cells. Running projection…")
+            status.info(f"Running MSI projection for {n_cells:,} cells…")
+
+            # Run projection + quantification
+            try:
+                C = msi_stack.shape[0]
+                channel_counter = [0]
+
+                def _proj_cb(msg: str):
+                    if msg.startswith("Projecting channel"):
+                        channel_counter[0] += 1
+                        frac = 0.15 + 0.75 * (channel_counter[0] / max(C, 1))
+                        progress.progress(frac, text=msg)
+                    status.info(msg)
+
+                result = run_projection_pipeline(
+                    msi_stack=msi_stack,
+                    if_shape=if_stack.shape[-2:],
+                    nuclear_binary=bin_arr.astype(bool),
+                    nuclear_labeled=nuc_arr,
+                    nuclear_expanded=quant_labeled,
+                    channel_labels=msi_labels,
+                    output_dir=proj_dir,
+                    status_cb=_proj_cb,
+                )
+                st.session_state.ana_projected         = result["projected_tif"]
+                st.session_state.ana_cell_csv          = result["nuclear_csv"]
+                st.session_state.ana_expanded_cell_csv = result["expanded_csv"]
+                progress.progress(1.0, text="Done.")
+                mask_desc = "expanded mask" if do_expand else "original mask"
+                status.success(
+                    f"Projection complete — {n_cells:,} cells quantified using {mask_desc}. "
+                    f"You can now run Clustering or GNN Explainability."
+                )
+            except Exception as e:
+                status.error("Projection failed.")
+                st.exception(e)
+
+    # ── Annotation / phenotype CSV ────────────────────────────────────────
+    st.divider()
+    st.markdown("##### Step 2 — Upload cell annotations / phenotypes (optional)")
+    st.caption(
+        "A single-column CSV or TXT where **row N** is the label for cell ID N "
+        "(row 1 = cell 1, row 2 = cell 2, …). No header needed. "
+        "The annotation is merged into the clustering results so it appears in napari "
+        "and can be used as a GNN label."
+    )
+
+    ann_file = st.file_uploader(
+        "Annotation file", type=["csv", "txt"], key="custom_annotation_csv"
+    )
+    ann_name = st.text_input(
+        "Annotation column name",
+        value="phenotype",
+        key="custom_ann_name",
+        help="e.g. 'celltype', 'phenotype', 'manual_cluster'",
+    )
+
+    if st.button("Save annotation", key="custom_ann_save",
+                 disabled=(ann_file is None or not ann_name.strip())):
+        import pandas as _pd
+        import colorsys as _cs
+        import tifffile as _tiff
+        import numpy as _np
+        import matplotlib.pyplot as _plt
+
+        cl_dir = out_dir / "annotations" / "cells"
+        cl_dir.mkdir(parents=True, exist_ok=True)
+
+        raw = ann_file.read().decode("utf-8", errors="replace").splitlines()
+        raw = [r.strip() for r in raw if r.strip()]
+        labels_raw = raw  # row 0 → cell 1
+
+        ann_df = _pd.DataFrame({
+            "cell_id": list(range(1, len(labels_raw) + 1)),
+            ann_name:  labels_raw,
+        })
+
+        # Merge into existing annotation CSV if present, else create it
+        clustered_csv = cl_dir / "cells__clustered.csv"
+        if clustered_csv.exists():
+            existing = _pd.read_csv(str(clustered_csv))
+            if ann_name in existing.columns:
+                existing = existing.drop(columns=[ann_name])
+            merged = existing.merge(ann_df, on="cell_id", how="left")
+        else:
+            # Bootstrap from cell table if available
+            cell_csv_path = st.session_state.get("ana_cell_csv") or \
+                str(proj_dir / "cell_level_metabolic_table__nuclear_expanded__mean.csv")
+            if Path(cell_csv_path).exists():
+                base = _pd.read_csv(cell_csv_path)[["cell_id"]]
+                merged = base.merge(ann_df, on="cell_id", how="left")
+            else:
+                merged = ann_df.copy()
+
+        merged.to_csv(str(clustered_csv), index=False)
+
+        # Colors CSV (required by napari)
+        uniq = sorted(merged[ann_name].dropna().astype(str).unique())
+        n = len(uniq)
+        color_rows = []
+        for i, lab in enumerate(uniq):
+            r, g, b = [int(v * 255) for v in _cs.hsv_to_rgb(i / max(n, 1), 0.75, 0.95)]
+            color_rows.append({"cluster": lab, "R": r, "G": g, "B": b,
+                                "hex": f"#{r:02X}{g:02X}{b:02X}"})
+        _pd.DataFrame(color_rows).to_csv(str(cl_dir / f"{ann_name}__colors.csv"), index=False)
+
+        # Colored mask PNG
+        exp_mask_path = seg_dir / "nuclear_mask_expanded.tif"
+        if exp_mask_path.exists():
+            lmask = _np.squeeze(_tiff.imread(str(exp_mask_path))).astype(_np.int32)
+            cmap  = {r["cluster"]: (r["R"], r["G"], r["B"]) for r in color_rows}
+            h, w  = lmask.shape
+            rgb   = _np.zeros((h, w, 3), dtype=_np.uint8)
+            max_id = int(lmask.max())
+            lut    = _np.zeros((max_id + 1, 3), dtype=_np.uint8)
+            id2lbl = merged.set_index("cell_id")[ann_name].to_dict()
+            for cid, lbl in id2lbl.items():
+                if 0 <= int(cid) <= max_id and str(lbl) in cmap:
+                    lut[int(cid)] = cmap[str(lbl)]
+            fg = lmask > 0
+            rgb[fg] = lut[lmask[fg]]
+            _plt.figure(figsize=(max(6, w / 350), max(6, h / 350)))
+            _plt.imshow(rgb); _plt.axis("off"); _plt.tight_layout()
+            _plt.savefig(str(cl_dir / f"{ann_name}__colored_mask.png"),
+                         dpi=150, bbox_inches="tight", pad_inches=0)
+            _plt.close()
+
+        # Also store annotation name in session state for GNN tab
+        st.session_state["custom_annotation_col"] = ann_name
+        st.session_state["custom_annotation_dir"] = str(cl_dir)
+
+        st.success(
+            f"Annotation '{ann_name}' saved — {n} unique labels, {len(ann_df):,} cells. "
+            f"Visible in napari under 'Cell Clusters' and available in GNN Explainability."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +1011,7 @@ def render_analysis() -> None:
             "4 · LR→HR Projection",
             "5 · Superpixels",
             "6 · Clustering",
+            "7 · Custom Data",
         ])
 
         with tabs[0]:
@@ -790,3 +1031,6 @@ def render_analysis() -> None:
 
         with tabs[5]:
             _tab_clustering(edited_msi)
+
+        with tabs[6]:
+            _tab_custom_data(if_stack, msi_stack, msi_labels, edited_if)

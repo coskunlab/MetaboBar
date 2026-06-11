@@ -1,19 +1,8 @@
 """
-Standalone napari viewer for Metabobarcoding results.
+Standalone napari viewer for MetaBar results.
 
 Launched as a subprocess from the Streamlit app.
 Accepts a JSON config file path as the only argument.
-
-Layers:
-  - Fluorescence channels (one per IF channel, additive blending)
-  - Projected MALDI (one channel at a time, viridis)
-  - Cell borders (green)
-  - Expanded cell borders (yellow)
-  - Superpixel borders (white)
-  - Cell cluster overlay (dynamic)
-  - Superpixel cluster overlay (dynamic)
-
-Info panel: hover/click shows cell or superpixel data.
 """
 
 from __future__ import annotations
@@ -21,7 +10,44 @@ from __future__ import annotations
 import json
 import re
 import sys
+import types
 from pathlib import Path
+
+# ── Patch numba out before napari imports it ──────────────────────────────────
+# napari.utils.colormaps.colormap does `import numba` for JIT acceleration.
+# In embedded Python, numba/llvmlite fail to load. We replace numba with a
+# stub that makes the @numba.jit decorator a no-op.
+def _make_numba_stub():
+    stub = types.ModuleType("numba")
+    def _noop_decorator(*args, **kwargs):
+        # Handle both @jit and @jit(...)
+        if len(args) == 1 and callable(args[0]):
+            return args[0]  # @jit without args
+        return lambda f: f  # @jit(...) with args
+    stub.jit     = _noop_decorator
+    stub.njit    = _noop_decorator
+    stub.prange  = range
+    stub.float32 = float
+    stub.float64 = float
+    stub.int32   = int
+    stub.int64   = int
+    stub.boolean = bool
+    stub.types   = types.ModuleType("numba.types")
+    stub.core    = types.ModuleType("numba.core")
+    # Register submodules
+    import sys as _sys
+    _sys.modules["numba"]       = stub
+    _sys.modules["numba.types"] = stub.types
+    _sys.modules["numba.core"]  = stub.core
+    return stub
+
+try:
+    import numba  # use real numba if available
+except ImportError:
+    _make_numba_stub()
+except Exception:
+    _make_numba_stub()
+# ─────────────────────────────────────────────────────────────────────────────
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -122,7 +148,7 @@ def _read_color_csv(path: Path) -> dict:
 
 
 def _discover_clusters(cluster_dir: Path, name: str, id_col: str) -> dict:
-    info = {"available": False, "df": None, "id_col": id_col, "methods": {"leiden": {}, "kmeans": {}}}
+    info = {"available": False, "df": None, "id_col": id_col, "methods": {"leiden": {}, "kmeans": {}, "annotation": {}}}
     csv = cluster_dir / f"{name}__clustered.csv"
     if not csv.exists():
         return info
@@ -131,13 +157,22 @@ def _discover_clusters(cluster_dir: Path, name: str, id_col: str) -> dict:
         return info
     info["df"] = df
     for col in df.columns:
+        # First try standard leiden/kmeans pattern
         parsed = _parse_cluster_col(col)
-        if parsed is None:
-            continue
-        method, param = parsed
+        if parsed is not None:
+            method, param = parsed
+        else:
+            # Fall back: if a colors CSV exists for this column, treat it as an annotation
+            color_csv = cluster_dir / f"{col}__colors.csv"
+            if color_csv.exists():
+                method, param = "annotation", col
+            else:
+                continue
         color_csv = cluster_dir / f"{col}__colors.csv"
         if not color_csv.exists():
             continue
+        if method not in info["methods"]:
+            info["methods"][method] = {}
         try:
             info["methods"][method][str(param)] = {
                 "col": col,
@@ -145,7 +180,7 @@ def _discover_clusters(cluster_dir: Path, name: str, id_col: str) -> dict:
             }
         except Exception:
             pass
-    if info["methods"]["leiden"] or info["methods"]["kmeans"]:
+    if any(info["methods"][m] for m in info["methods"]):
         info["available"] = True
     return info
 
@@ -208,16 +243,15 @@ class InfoPanel(QWidget):
 
 class BarcodePanel(QWidget):
     """
-    Two barcode rows for a selected cell:
-      Row 1 — MALDI channel mean intensities (viridis, sum-normalised)
-      Row 2 — Binary positivity per channel (gray, 0/1)
+    Single barcode row for a selected cell:
+      MALDI channel mean intensities (viridis, sum-normalised)
     """
 
     def __init__(self, channel_labels: list):
         super().__init__()
         self.channel_labels = list(channel_labels)
         self.setWindowTitle("Cell Barcode")
-        self.resize(900, 320)
+        self.resize(900, 200)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(6, 6, 6, 6)
@@ -226,78 +260,46 @@ class BarcodePanel(QWidget):
         self.title_label = QLabel("Hover or click a cell")
         layout.addWidget(self.title_label)
 
-        self.fig = Figure(figsize=(11, 5.0))
+        self.fig = Figure(figsize=(11, 4.5))
         self.fig.set_constrained_layout(True)
         self.canvas = FigureCanvas(self.fig)
-        self.canvas.setMinimumHeight(300)
+        self.canvas.setMinimumHeight(280)
         layout.addWidget(self.canvas, stretch=1)
         self.setLayout(layout)
         self._draw_empty("Hover or click a cell")
 
-    def _tick_indices(self, n: int, max_ticks: int = 30) -> np.ndarray:
-        if n <= max_ticks:
-            return np.arange(n)
-        return np.linspace(0, n - 1, max_ticks).round().astype(int)
-
     def _draw_empty(self, msg: str = "No cell selected") -> None:
         self.fig.clf()
-        self.fig.set_constrained_layout(False)
         ax = self.fig.add_subplot(1, 1, 1)
         ax.text(0.5, 0.5, msg, ha="center", va="center", fontsize=10,
                 transform=ax.transAxes)
         ax.set_axis_off()
         self.canvas.draw_idle()
 
-    def _plot_row(self, ax, values: np.ndarray, cmap: str,
-                  vmax: float = 1.0, show_xlabels: bool = False) -> None:
-        ax.clear()
-        arr = np.asarray(values, dtype=np.float32)
-        if arr.size == 0:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center")
-            ax.set_axis_off()
-            return
-        ax.imshow(arr[np.newaxis, :], aspect="auto", cmap=cmap,
-                  interpolation="nearest", vmin=0.0, vmax=max(vmax, 1e-8))
-        ax.set_yticks([])
-        if show_xlabels:
-            tick_idx = self._tick_indices(len(self.channel_labels))
-            ax.set_xticks(tick_idx)
-            ax.set_xticklabels(
-                [self.channel_labels[i] for i in tick_idx],
-                rotation=90, fontsize=5.5, ha="center", va="top",
-            )
-            ax.tick_params(axis="x", pad=1)
-        else:
-            ax.set_xticks([])
-
     def update_cell(self, cell_id: int, maldi_values: np.ndarray,
-                    binary_values: np.ndarray) -> None:
+                    binary_values: np.ndarray = None) -> None:
         self.title_label.setText(f"Cell {cell_id}")
         self.fig.clf()
-        self.fig.set_constrained_layout(False)
 
-        # Two thin bars with explicit height ratio: bar height 1, label space 3
-        gs = self.fig.add_gridspec(
-            2, 1,
-            height_ratios=[1, 1],
-            left=0.04, right=0.99,
-            top=0.97, bottom=0.42,
-            hspace=0.15,
-        )
-        ax0 = self.fig.add_subplot(gs[0])
-        ax1 = self.fig.add_subplot(gs[1])
+        ax = self.fig.add_subplot(1, 1, 1)
 
-        # Sum-normalise MALDI
         maldi = np.nan_to_num(np.asarray(maldi_values, dtype=np.float32), nan=0.0)
         s = maldi.sum()
         if s > 0:
             maldi = maldi / s
 
-        self._plot_row(ax0, maldi, cmap="viridis",
-                       vmax=float(maldi.max()) or 1.0, show_xlabels=False)
+        ax.imshow(maldi[np.newaxis, :], aspect="auto", cmap="viridis",
+                  interpolation="nearest", vmin=0.0, vmax=float(maldi.max()) or 1.0)
+        ax.set_yticks([])
 
-        binary = np.asarray(binary_values, dtype=np.float32)
-        self._plot_row(ax1, binary, cmap="gray", vmax=1.0, show_xlabels=True)
+        ax.set_xticks(np.arange(len(self.channel_labels)))
+        ax.set_xticklabels(
+            self.channel_labels,
+            rotation=90, fontsize=6.0, ha="center", va="top",
+            fontweight="bold",
+        )
+        ax.tick_params(axis="x", pad=1)
+        ax.set_title(f"Cell {cell_id} — metabolic barcode (sum-normalised)", fontsize=8)
 
         self.canvas.draw_idle()
 
@@ -307,22 +309,26 @@ class BarcodePanel(QWidget):
 
 
 class ClusterPanel(QWidget):
-    def __init__(self, cell_info: dict, sp_info: dict, on_change=None):
+    def __init__(self, cell_info: dict, sp_info: dict, ann_info: dict = None, on_change=None):
         super().__init__()
         self.cell_info = cell_info
         self.sp_info   = sp_info
+        self.ann_info  = ann_info or {"available": False, "df": None, "id_col": "cell_id", "methods": {"leiden": {}, "kmeans": {}}}
         self.on_change = on_change
         self.setWindowTitle("Cluster Overlays")
-        self.resize(380, 220)
+        self.resize(380, 300)
         layout = QVBoxLayout()
         self.cell_grp = self._build_group("Cells",       cell_info)
         self.sp_grp   = self._build_group("Superpixels", sp_info)
+        self.ann_grp  = self._build_group("Annotations", self.ann_info)
         layout.addWidget(self.cell_grp["box"])
         layout.addWidget(self.sp_grp["box"])
+        layout.addWidget(self.ann_grp["box"])
         layout.addStretch(1)
         self.setLayout(layout)
         self._wire(self.cell_grp, cell_info)
         self._wire(self.sp_grp,   sp_info)
+        self._wire(self.ann_grp,  self.ann_info)
 
     def _build_group(self, title: str, info: dict) -> dict:
         box   = QGroupBox(title)
@@ -330,7 +336,7 @@ class ClusterPanel(QWidget):
         mc    = QComboBox()
         pc    = QComboBox()
         if info["available"]:
-            methods = ([m for m in ["leiden","kmeans"] if info["methods"][m]])
+            methods = [m for m in ["leiden", "kmeans", "annotation"] if info["methods"].get(m)]
             mc.addItems(methods)
         else:
             mc.addItem("none"); mc.setEnabled(False)
@@ -345,8 +351,12 @@ class ClusterPanel(QWidget):
             return
         def refresh():
             m = grp["mc"].currentText()
-            params = sorted(info["methods"].get(m, {}).keys(),
-                            key=lambda x: float(x) if m == "leiden" else int(float(x)))
+            if m == "leiden":
+                params = sorted(info["methods"].get(m, {}).keys(), key=lambda x: float(x))
+            elif m == "kmeans":
+                params = sorted(info["methods"].get(m, {}).keys(), key=lambda x: int(float(x)))
+            else:
+                params = sorted(info["methods"].get(m, {}).keys())
             grp["pc"].blockSignals(True)
             grp["pc"].clear()
             grp["pc"].addItems([str(p) for p in params])
@@ -364,6 +374,7 @@ class ClusterPanel(QWidget):
         return {
             "cells":       {"method": self.cell_grp["mc"].currentText(), "param": self.cell_grp["pc"].currentText()},
             "superpixels": {"method": self.sp_grp["mc"].currentText(),   "param": self.sp_grp["pc"].currentText()},
+            "annotations": {"method": self.ann_grp["mc"].currentText(),  "param": self.ann_grp["pc"].currentText()},
         }
 
 
@@ -373,44 +384,73 @@ class ClusterPanel(QWidget):
 
 class MetaBarcodingViewer:
     def __init__(self, cfg: dict):
-        out_dir      = Path(cfg["output_dir"])
-        seg_dir      = out_dir / "segmentation"
-        proj_dir     = out_dir / "projection"
-        sp_dir       = out_dir / "superpixels"
-        cl_dir       = out_dir / "clustering"
+        self.cfg = cfg
+
+    def load_data(self):
+        """Load all data — safe to call from a background thread."""
+        cfg    = self.cfg
+        out_dir = Path(cfg["output_dir"])
+        seg_dir = out_dir / "segmentation"
+        proj_dir= out_dir / "projection"
+        sp_dir  = out_dir / "superpixels"
+        cl_dir  = out_dir / "clustering"
 
         self.channel_labels = cfg["msi_channel_labels"]
         self.if_labels      = cfg.get("if_channel_labels", [])
 
-        # ---- Load tables ----
         print("[LOAD] tables...")
         self.cell_df = pd.read_csv(str(proj_dir / "cell_level_metabolic_table__nuclear_expanded__mean.csv"))
-        self.sp_df   = pd.read_csv(str(sp_dir   / "mbp_superpixels_mean_intensity_matrix.csv"))
         self.cell_df_idx = self.cell_df.set_index("cell_id", drop=False)
-        self.sp_df_idx   = self.sp_df.set_index("superpixel_id", drop=False)
 
-        # ---- Load masks ----
+        # Superpixel table is optional
+        sp_csv = sp_dir / "mbp_superpixels_mean_intensity_matrix.csv"
+        if sp_csv.exists():
+            self.sp_df = pd.read_csv(str(sp_csv))
+            self.sp_df_idx = self.sp_df.set_index("superpixel_id", drop=False)
+        else:
+            self.sp_df = pd.DataFrame()
+            self.sp_df_idx = pd.DataFrame()
+            print("[INFO] No superpixel table found — superpixel features disabled.")
+
         print("[LOAD] masks...")
-        self.cell_mask     = _load_label_mask(seg_dir / "nuclear_mask.tif")
-        self.exp_mask      = _load_label_mask(seg_dir / "nuclear_mask_expanded.tif")
-        self.nuc_binary    = _load_binary_mask(seg_dir / "nuclear_mask_binary.tif")
-        self.sp_mask       = _load_label_mask(sp_dir  / "mbp_superpixels_label_mask.tif")
+        self.cell_mask  = _load_label_mask(seg_dir / "nuclear_mask.tif")
+        self.exp_mask   = _load_label_mask(seg_dir / "nuclear_mask_expanded.tif")
+        self.nuc_binary = _load_binary_mask(seg_dir / "nuclear_mask_binary.tif")
 
-        self.visible_mask  = self.nuc_binary | (self.sp_mask > 0)
-        self.exp_visible   = self.exp_mask > 0
+        # Superpixel mask is optional
+        sp_mask_path = sp_dir / "mbp_superpixels_label_mask.tif"
+        if sp_mask_path.exists():
+            self.sp_mask = _load_label_mask(sp_mask_path)
+        else:
+            self.sp_mask = np.zeros(self.cell_mask.shape, dtype=np.int32)
+            print("[INFO] No superpixel mask found — superpixel overlay disabled.")
 
-        # ---- Load IF stack ----
+        self.visible_mask = self.nuc_binary | (self.sp_mask > 0)
+        self.exp_visible  = self.exp_mask > 0
+
         print("[LOAD] fluorescence stack...")
         if_path = Path(cfg.get("if_stack_path", ""))
         self.if_stack = None
-        if if_path.exists():
+        if if_path.name and if_path.exists():
             self.if_stack = _ensure_chw(tiff.imread(str(if_path)))
+            # Auto-read channel names from TIFF metadata if not provided
+            if not self.if_labels or len(self.if_labels) != self.if_stack.shape[0]:
+                try:
+                    with tiff.TiffFile(str(if_path)) as tf:
+                        if tf.is_imagej:
+                            meta_labels = tf.imagej_metadata.get("Labels", [])
+                            if meta_labels:
+                                self.if_labels = list(meta_labels)
+                except Exception:
+                    pass
+            if not self.if_labels or len(self.if_labels) != self.if_stack.shape[0]:
+                self.if_labels = [f"IF ch {i}" for i in range(self.if_stack.shape[0])]
+            print(f"[LOAD] IF stack: {self.if_stack.shape}, labels: {self.if_labels}")
 
-        # ---- Load projected MALDI ----
         print("[LOAD] projected MALDI stack (Gaussian)...")
-        self.maldi = _ensure_chw(tiff.imread(str(proj_dir / "projected_stack_all_channels__full_hr__gaussian.tif")))
+        self.maldi = _ensure_chw(tiff.imread(str(
+            proj_dir / "projected_stack_all_channels__full_hr__gaussian.tif")))
 
-        # ---- Load nearest-neighbour MALDI ----
         nn_path = proj_dir / "projected_stack_all_channels__full_hr__nearest.tif"
         self.maldi_nn = None
         if nn_path.exists():
@@ -420,48 +460,57 @@ class MetaBarcodingViewer:
         if self.maldi.shape[0] != len(self.channel_labels):
             raise ValueError(
                 f"MALDI stack has {self.maldi.shape[0]} channels but "
-                f"{len(self.channel_labels)} labels were provided."
-            )
+                f"{len(self.channel_labels)} labels were provided.")
 
-        # ---- Borders ----
         print("[BORDER] computing borders...")
         cell_nuc = np.where(self.nuc_binary, self.cell_mask, 0).astype(np.int32)
         self.cell_border_rgb = _border_rgb(_fast_borders(cell_nuc, self.nuc_binary), (0.0, 1.0, 0.0))
         self.exp_border_rgb  = _border_rgb(_fast_borders(self.exp_mask, self.exp_visible), (1.0, 1.0, 0.0))
         self.sp_border_rgb   = _border_rgb(_fast_borders(self.sp_mask, self.sp_mask > 0), (1.0, 1.0, 1.0))
 
-        # ---- Clustering ----
         print("[CLUSTER] discovering results...")
         self.cell_cl = _discover_clusters(cl_dir / "cells",       "cells",       "cell_id")
         self.sp_cl   = _discover_clusters(cl_dir / "superpixels", "superpixels", "superpixel_id")
 
-        # ---- Load positivity data ----
-        self.threshold_df = None
-        self.binary_df    = None
-        pos_thr_csv  = out_dir / "positivity" / "protein_marker_thresholds.csv"
-        pos_bin_csv  = out_dir / "positivity" / "cell_binary_labels.csv"
+        # Also discover annotations (saved separately from clustering)
+        ann_dir = out_dir / "annotations"
+        self.ann_cl = _discover_clusters(ann_dir / "cells", "cells", "cell_id")
+
+        self.threshold_df  = None
+        self.binary_df     = None
+        self.binary_df_idx = None
+        pos_thr_csv = out_dir / "positivity" / "protein_marker_thresholds.csv"
+        pos_bin_csv = out_dir / "positivity" / "cell_binary_labels.csv"
         if pos_thr_csv.exists() and pos_bin_csv.exists():
             print("[LOAD] positivity data...")
-            self.threshold_df = pd.read_csv(str(pos_thr_csv))
-            self.binary_df    = pd.read_csv(str(pos_bin_csv))
-            self.binary_df["cell_id"] = self.binary_df["cell_id"].astype(str)
-            self.binary_df_idx = self.binary_df.set_index("cell_id", drop=False)
+            try:
+                self.threshold_df  = pd.read_csv(str(pos_thr_csv))
+                self.binary_df     = pd.read_csv(str(pos_bin_csv))
+                self.binary_df_idx = self.binary_df.set_index("cell_id")
+                print("[LOAD] positivity data done.")
+            except Exception as e:
+                print(f"[WARN] Could not load positivity data: {e}")
         else:
-            print("[INFO] no positivity data found — positivity layer will be empty")
-            self.binary_df_idx = None
+            print("[INFO] no positivity data found")
 
-        # ---- State ----
         self.current_ch = self.channel_labels[0]
         self.locked     = False
         self.locked_yx  = None
+        print("[LOAD] data loading complete.")
 
-        # ---- Build viewer ----
-        self.viewer = napari.Viewer(title="Metabobarcoding Viewer")
+    def build_viewer(self):
+        """Create napari window — MUST be called on the main Qt thread."""
+        print("[BUILD] creating napari viewer window...")
+        self.viewer = napari.Viewer(title="MetaBar Viewer")
+        print("[BUILD] adding layers...")
         self._build_layers()
+        print("[BUILD] adding widgets...")
         self._build_widgets()
+        print("[BUILD] binding callbacks...")
         self._bind_callbacks()
         self.cluster_panel.on_change = self._refresh_clusters
         self._refresh_clusters()
+        print("[BUILD] done.")
 
     # ------------------------------------------------------------------
     def _maldi_img(self, ch: str) -> np.ndarray:
@@ -491,17 +540,15 @@ class MetaBarcodingViewer:
         max_id = int(self.exp_mask.max())
         lut = np.zeros((max_id + 1, 3), dtype=np.float32)
 
-        for _, row in self.binary_df[["cell_id", col]].iterrows():
-            try:
-                cid = int(float(row["cell_id"]))
-                val = int(row[col])
-            except Exception:
-                continue
-            if 0 <= cid <= max_id:
-                lut[cid] = (1.0, 0.0, 0.0) if val == 1 else (0.25, 0.25, 0.25)
+        # Vectorised — avoid slow iterrows
+        ids  = self.binary_df["cell_id"].to_numpy(dtype=np.int32)
+        vals = self.binary_df[col].to_numpy(dtype=np.int32)
+        valid_mask = (ids >= 0) & (ids <= max_id)
+        lut[ids[valid_mask & (vals == 1)]] = (1.0, 0.0, 0.0)
+        lut[ids[valid_mask & (vals == 0)]] = (0.25, 0.25, 0.25)
 
-        valid = self.exp_mask > 0
-        rgb[valid] = lut[self.exp_mask[valid]]
+        fg = self.exp_mask > 0
+        rgb[fg] = lut[self.exp_mask[fg]]
         return rgb
 
     # ------------------------------------------------------------------
@@ -556,6 +603,7 @@ class MetaBarcodingViewer:
         empty = np.zeros(self.cell_mask.shape + (3,), dtype=np.float32)
         self.sp_cl_layer   = self.viewer.add_image(empty.copy(), name="Superpixel Clusters", rgb=True, opacity=0.8, blending="translucent", visible=False)
         self.cell_cl_layer = self.viewer.add_image(empty.copy(), name="Cell Clusters",       rgb=True, opacity=0.8, blending="translucent", visible=False)
+        self.ann_cl_layer  = self.viewer.add_image(empty.copy(), name="Cell Annotations",    rgb=True, opacity=0.8, blending="translucent", visible=False)
 
         # Borders
         self.sp_border_layer   = self.viewer.add_image(self.sp_border_rgb,   name="Superpixel Borders",    rgb=True, opacity=1.0, blending="additive", visible=False)
@@ -582,7 +630,7 @@ class MetaBarcodingViewer:
 
         self.info_panel    = InfoPanel()
         self.barcode_panel = BarcodePanel(self.channel_labels)
-        self.cluster_panel = ClusterPanel(self.cell_cl, self.sp_cl)
+        self.cluster_panel = ClusterPanel(self.cell_cl, self.sp_cl, self.ann_cl)
 
         self.info_panel.clear_btn.clicked.connect(self._clear_lock)
 
@@ -627,6 +675,7 @@ class MetaBarcodingViewer:
         for kind, layer, info, mask in [
             ("cells",       self.cell_cl_layer, self.cell_cl, self.exp_mask),
             ("superpixels", self.sp_cl_layer,   self.sp_cl,   self.sp_mask),
+            ("annotations", self.ann_cl_layer,  self.ann_cl,  self.exp_mask),
         ]:
             m = state[kind]["method"]
             p = state[kind]["param"]
@@ -641,7 +690,7 @@ class MetaBarcodingViewer:
                 visible_mask=(mask > 0),
             )
             layer.data = rgb
-            layer.name = f"{kind.capitalize()} Clusters: {m} {p}"
+            layer.name = f"{kind.capitalize()}: {m} {p}"
 
     # ------------------------------------------------------------------
     def _update_info(self, y: int, x: int, locked: bool):
@@ -732,8 +781,115 @@ if __name__ == "__main__":
         print("Usage: python napari_viewer.py <config.json>", file=sys.stderr)
         sys.exit(1)
 
-    with open(sys.argv[1], encoding="utf-8") as f:
+    with open(sys.argv[1], encoding="utf-8-sig") as f:
         cfg = json.load(f)
 
-    app = MetaBarcodingViewer(cfg)
-    app.run()
+    import threading
+
+    # Use napari's QApplication — compatible with multiple napari versions
+    from qtpy.QtWidgets import QApplication, QProgressBar, QVBoxLayout, QLabel, QMessageBox
+    from qtpy.QtCore import Qt, QTimer
+
+    try:
+        from napari._qt.qt_event_loop import get_qapp
+        qt_app = get_qapp()
+    except ImportError:
+        try:
+            from napari._qt.qt_event_loop import get_app
+            qt_app = get_app()
+        except ImportError:
+            qt_app = QApplication.instance() or QApplication(sys.argv)
+
+    # ---- Splash window ----
+    splash_widget = QWidget()
+    splash_widget.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+    splash_widget.setFixedSize(420, 140)
+    splash_widget.setStyleSheet("background-color: #1e1e2e; border-radius: 8px;")
+    layout = QVBoxLayout()
+    layout.setContentsMargins(24, 20, 24, 20)
+    layout.setSpacing(12)
+    title = QLabel("MetaBar Viewer")
+    title.setStyleSheet("color: white; font-size: 18px; font-weight: bold;")
+    title.setAlignment(Qt.AlignCenter)
+    status_label = QLabel("Loading data, please wait...")
+    status_label.setStyleSheet("color: #aaaacc; font-size: 11px;")
+    status_label.setAlignment(Qt.AlignCenter)
+    bar = QProgressBar()
+    bar.setRange(0, 0)
+    bar.setStyleSheet("""
+        QProgressBar { border: none; background: #2e2e4e; border-radius: 4px; height: 8px; }
+        QProgressBar::chunk { background: #6c63ff; border-radius: 4px; }
+    """)
+    bar.setTextVisible(False)
+    layout.addWidget(title)
+    layout.addWidget(status_label)
+    layout.addWidget(bar)
+    splash_widget.setLayout(layout)
+    screen = qt_app.primaryScreen().geometry()
+    splash_widget.move(
+        screen.center().x() - splash_widget.width() // 2,
+        screen.center().y() - splash_widget.height() // 2,
+    )
+    splash_widget.show()
+    qt_app.processEvents()
+
+    # ---- Load data in background thread ----
+    viewer_holder = [None]
+    error_holder  = [None]
+    done_flag     = [False]
+    status_holder = ["Initialising..."]
+
+    def _load():
+        try:
+            import builtins
+            _orig = builtins.print
+            def _p(*a, **k):
+                status_holder[0] = " ".join(str(x) for x in a)
+                _orig(*a, **k)
+            builtins.print = _p
+            v = MetaBarcodingViewer(cfg)
+            v.load_data()
+            viewer_holder[0] = v
+        except Exception:
+            import traceback
+            error_holder[0] = traceback.format_exc()
+        finally:
+            done_flag[0] = True
+
+    threading.Thread(target=_load, daemon=True).start()
+
+    elapsed = [0]
+
+    def _check():
+        elapsed[0] += 1
+        if status_holder[0]:
+            status_label.setText(status_holder[0][:80])
+        qt_app.processEvents()
+
+        if done_flag[0]:
+            timer.stop()
+            splash_widget.close()
+            if error_holder[0]:
+                QMessageBox.critical(None, "MetaBar Viewer Error",
+                    f"Failed to load data:\n\n{error_holder[0][:2000]}")
+                sys.exit(1)
+            try:
+                viewer_holder[0].build_viewer()
+                napari.run()
+            except Exception:
+                import traceback
+                QMessageBox.critical(None, "MetaBar Viewer Error",
+                    f"Failed to build viewer:\n\n{traceback.format_exc()[:2000]}")
+                sys.exit(1)
+
+        if elapsed[0] > 1500:
+            timer.stop()
+            splash_widget.close()
+            QMessageBox.critical(None, "Timeout",
+                f"Loading timed out.\nLast step: {status_holder[0]}")
+            sys.exit(1)
+
+    timer = QTimer()
+    timer.timeout.connect(_check)
+    timer.start(400)
+    napari.run(max_loop_level=2)

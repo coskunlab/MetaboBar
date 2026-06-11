@@ -13,7 +13,7 @@ from typing import Dict, List
 
 import streamlit as st
 
-from app.utils.analysis.comparative import run_binary_comparison
+from app.utils.analysis.comparative import run_binary_comparison, run_multiclass_comparison
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +25,7 @@ def _init_state() -> None:
         "comp_samples": {},
         "comp_output_dir": "",
         "comp_binary_plots": {},
+        "comp_annotation_plots": {},
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -85,6 +86,20 @@ def _render_sample_manager() -> Dict[str, Path]:
     return valid
 
 
+def _display_plots(plots: dict) -> None:
+    """Render a {target: [png_paths]} dict as expandable image sections."""
+    for target, png_paths in sorted(plots.items()):
+        with st.expander(f"{target}", expanded=False):
+            img_cols = st.columns(min(3, max(1, len(png_paths))))
+            for j, png in enumerate(png_paths):
+                p = Path(png)
+                if p.exists():
+                    label = "Grouped bar" if "bar" in p.name else "Heatmap"
+                    with img_cols[j % len(img_cols)]:
+                        st.caption(label)
+                        st.image(str(p), use_container_width=True)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -97,8 +112,8 @@ def render_comparative() -> None:
         st.markdown("#### Cross-Sample GNN Explainability Comparison")
         st.caption(
             "Compare GNN feature importance results across multiple samples. "
-            "Each sample must have been processed through the full pipeline "
-            "(Analysis → GNN Explainability) with the same MSI channels."
+            "Each sample must have been processed through the Analysis and GNN steps "
+            "with the same MSI channels."
         )
 
         # ---- Sample manager ----
@@ -120,50 +135,79 @@ def render_comparative() -> None:
         out_dir = Path(out_val.strip()) if out_val.strip() else None
 
         # ---- Parameters ----
-        top_n = st.number_input("Top-N features per plot", 5, 50, 20, 5,
-                                key="comp_top_n")
+        top_n = st.number_input("Top-N features per plot", 5, 50, 20, 5, key="comp_top_n")
 
         st.divider()
 
-        # ---- Run button ----
         can_run = len(valid_samples) >= 2 and out_dir is not None
 
-        if st.button(
-            "Run Comparison",
-            type="primary",
-            key="comp_run_binary",
-            disabled=not can_run,
-            use_container_width=True,
-        ):
-            status   = st.empty()
-            progress = st.progress(0.0, text="Starting comparison…")
-            try:
-                plots = run_binary_comparison(
-                    sample_dirs=valid_samples,
-                    output_dir=out_dir,
-                    top_n=int(top_n),
-                    status_cb=lambda m: (status.info(m), progress.progress(0.5, text=m)),
-                )
-                st.session_state.comp_binary_plots = {
-                    k: [str(p) for p in v] for k, v in plots.items()
-                }
-                progress.progress(1.0, text="Done.")
-                status.success(f"Comparison complete → {out_dir}")
-            except Exception as e:
-                status.error("Comparison failed.")
-                st.exception(e)
+        tab_bin, tab_ann = st.tabs([
+            "Positivity (binary)",
+            "Annotations (multiclass)",
+        ])
 
-        # ---- Display results ----
-        if st.session_state.comp_binary_plots:
-            st.divider()
-            st.markdown("#### Comparison results")
-            for marker, png_paths in sorted(st.session_state.comp_binary_plots.items()):
-                with st.expander(f"Marker: {marker}", expanded=False):
-                    img_cols = st.columns(min(3, len(png_paths)))
-                    for j, png in enumerate(png_paths):
-                        p = Path(png)
-                        if p.exists():
-                            label = "Grouped bar" if "bar" in p.name else ("Violin" if "violin" in p.name else "Heatmap")
-                            with img_cols[j % len(img_cols)]:
-                                st.caption(label)
-                                st.image(str(p), use_container_width=True)
+        # ── Binary ────────────────────────────────────────────────────────
+        with tab_bin:
+            st.caption(
+                "Compares per-marker binary GNN feature importance "
+                "from `gnn_explainability/binary/` across samples."
+            )
+            if st.button("Run Binary Comparison", type="primary",
+                         key="comp_run_binary", disabled=not can_run,
+                         use_container_width=True):
+                status   = st.empty()
+                progress = st.progress(0.0, text="Starting…")
+                try:
+                    plots = run_binary_comparison(
+                        sample_dirs=valid_samples,
+                        output_dir=out_dir / "binary",
+                        top_n=int(top_n),
+                        status_cb=lambda m: (status.info(m), progress.progress(0.5, text=m)),
+                    )
+                    st.session_state.comp_binary_plots = {
+                        k: [str(p) for p in v] for k, v in plots.items()
+                    }
+                    progress.progress(1.0, text="Done.")
+                    status.success(f"Binary comparison complete → {out_dir / 'binary'}")
+                except Exception as e:
+                    status.error("Binary comparison failed.")
+                    st.exception(e)
+
+            if st.session_state.comp_binary_plots:
+                st.divider()
+                st.markdown("**Results**")
+                _display_plots(st.session_state.comp_binary_plots)
+
+        # ── Annotations ───────────────────────────────────────────────────
+        with tab_ann:
+            st.caption(
+                "Compares per-class annotation GNN feature importance "
+                "from `gnn_explainability/annotations/` across samples. "
+                "Run the Annotations GNN tab for each sample first."
+            )
+            if st.button("Run Annotation Comparison", type="primary",
+                         key="comp_run_ann", disabled=not can_run,
+                         use_container_width=True):
+                status   = st.empty()
+                progress = st.progress(0.0, text="Starting…")
+                try:
+                    plots = run_multiclass_comparison(
+                        sample_dirs=valid_samples,
+                        output_dir=out_dir / "annotations",
+                        source="annotations",
+                        top_n=int(top_n),
+                        status_cb=lambda m: (status.info(m), progress.progress(0.5, text=m)),
+                    )
+                    st.session_state.comp_annotation_plots = {
+                        k: [str(p) for p in v] for k, v in plots.items()
+                    }
+                    progress.progress(1.0, text="Done.")
+                    status.success(f"Annotation comparison complete → {out_dir / 'annotations'}")
+                except Exception as e:
+                    status.error("Annotation comparison failed.")
+                    st.exception(e)
+
+            if st.session_state.comp_annotation_plots:
+                st.divider()
+                st.markdown("**Results**")
+                _display_plots(st.session_state.comp_annotation_plots)
