@@ -41,8 +41,6 @@ Two datasets are available on Zenodo to explore MetaBar with real data.
 ### Raw Input Files — run the full pipeline from scratch
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20647909.svg)](https://doi.org/10.5281/zenodo.20647909)
 
-**[MetaBar Demo Dataset — 10.5281/zenodo.20647909](https://doi.org/10.5281/zenodo.20647909)**
-
 | File | Dataset | Size | Contents |
 |---|---|---|---|
 | `demo_clozapine_dose.zip` | Clozapine dose–response (mouse brain) | 7.2 GB | IF TIFF, MALDI TIFF, channel names |
@@ -55,8 +53,6 @@ Two datasets are available on Zenodo to explore MetaBar with real data.
 
 ### Processed Results — inspect pre-computed outputs immediately
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20648515.svg)](https://doi.org/10.5281/zenodo.20648515)
-
-**[MetaBar Processed Results — 10.5281/zenodo.20648515](https://doi.org/10.5281/zenodo.20648515)**
 
 | File | Dataset | Size | Contents |
 |---|---|---|---|
@@ -120,4 +116,4 @@ If you use MetaBar in your research, please cite:
 
 For questions or bug reports, please open an [issue](https://github.com/coskunlab/MetaBar/issues).
 
-Coskun Lab · School of Biological Sciences · Georgia Institute of Technology
+Coskun Lab · Department of Biomedical Engineering · Georgia Institute of Technology
